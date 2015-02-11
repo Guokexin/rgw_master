@@ -1687,7 +1687,6 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
 
   OpContext *ctx = new OpContext(op, m->get_reqid(), m->ops, obc, this);
-  ctx->op_t = pgbackend->get_transaction();
 
   if (!obc->obs.exists)
     ctx->snapset_obc = get_object_context(obc->obs.oi.soid.get_snapdir(), false);
