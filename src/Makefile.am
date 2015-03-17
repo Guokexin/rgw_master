@@ -36,6 +36,7 @@ include test/Makefile.am
 include tools/Makefile.am
 include Makefile-rocksdb.am
 include tracing/Makefile.am
+include compressor/Makefile.am
 
 
 # shell scripts
