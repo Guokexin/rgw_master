@@ -138,7 +138,7 @@ int chain_getxattr(const char *fn, const char *name, void *val, size_t size, int
     get_raw_xattr_name(name, i, raw_name, sizeof(raw_name));
 
     r = sys_getxattr(fn, raw_name, (char *)val + pos, chunk_size);
-    if (i && r == -ENOATTR) {
+    if (i && r == -ENODATA) {
       ret = pos;
       break;
     }
@@ -212,7 +212,7 @@ int chain_fgetxattr(int fd, const char *name, void *val, size_t size, int *orig_
     get_raw_xattr_name(name, i, raw_name, sizeof(raw_name));
 
     r = sys_fgetxattr(fd, raw_name, (char *)val + pos, chunk_size);
-    if (i && r == -ENOATTR) {
+    if (i && r == -ENODATA) {
       ret = pos;
       break;
     }
