@@ -143,6 +143,7 @@ namespace librbd {
     EventSocket event_socket;
 
     ContextWQ *aio_work_queue;
+    ContextWQ *op_work_queue;
     // Configuration
     static const string METADATA_CONF_PREFIX;
     bool cache;

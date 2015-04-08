@@ -88,7 +88,7 @@ public:
       readahead(),
       total_bytes_read(0), copyup_finisher(NULL),
       throttle((CephContext*)p.cct(), 0),
-      object_map(*this), aio_work_queue(NULL)
+      object_map(*this), aio_work_queue(NULL), op_work_queue(NULL)
   {
     md_ctx.dup(p);
     data_ctx.dup(p);
@@ -115,6 +115,9 @@ public:
                                    thread_pool_singleton);
     // use STATIC mode for rbd throttling
     throttle.config_mode(THROTTLE_MODE_STATIC);
+    op_work_queue = new ContextWQ("librbd::op_work_queue",
+                                  cct->_conf->rbd_op_thread_timeout,
+                                  thread_pool_singleton);
   }
 
   ImageCtx::~ImageCtx() {
@@ -137,6 +140,7 @@ public:
     }
     delete[] format_string;
 
+    delete op_work_queue;
     delete aio_work_queue;
   }
 
