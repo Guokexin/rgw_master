@@ -549,6 +549,7 @@ public:
   virtual void send_response() = 0;
   virtual const string name() { return "set_temp_url"; }
   virtual RGWOpType get_type() { return RGW_OP_SET_TEMPURL; }
+  virtual bool need_object_expiration() { return false; }
 };
 
 class RGWDeleteObj : public RGWOp {
