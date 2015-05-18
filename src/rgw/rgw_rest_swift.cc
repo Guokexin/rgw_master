@@ -541,7 +541,32 @@ int RGWSetTempUrl_ObjStore_SWIFT::get_params()
 
   if (temp_url_keys.empty())
     return -EINVAL;
+#if 0
+<<<<<<< HEAD
+=======
+  /* Handle Swift object expiration. */
+  utime_t delat_proposal;
+  string x_delete = s->info.env->get("HTTP_X_DELETE_AT", "");
 
+  if (!x_delete.empty()) {
+    string err;
+    long ts = strict_strtoll(x_delete.c_str(), 10, &err);
+
+    if (!err.empty()) {
+      return -EINVAL;
+    }
+
+    delat_proposal += utime_t(ts, 0);
+    if (delat_proposal < ceph_clock_now(g_ceph_context)) {
+      return -EINVAL;
+    }
+
+    delete_at = delat_proposal;
+  }
+
+  placement_rule = s->info.env->get("HTTP_X_STORAGE_POLICY", "");
+>>>>>>> 4f9a843... rgw: add basic support for X-Delete-At header of Swift API.
+#endif
   return 0;
 }
 
@@ -601,6 +626,13 @@ static void dump_object_metadata(struct req_state * const s,
 
   for (riter = response_attrs.begin(); riter != response_attrs.end(); ++riter) {
     s->cio->print("%s: %s\r\n", riter->first.c_str(), riter->second.c_str());
+  }
+
+  iter = attrs.find(RGW_ATTR_DELETE_AT);
+  if (iter != attrs.end()) {
+    utime_t delete_at;
+    ::decode(delete_at, iter->second);
+    s->cio->print("X-Delete-At: %lu\r\n", delete_at.sec());
   }
 }
 
