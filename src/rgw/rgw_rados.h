@@ -1287,8 +1287,11 @@ class RGWRados
   /** Open the pool used as root for this gateway */
   int open_root_pool_ctx();
   int open_gc_pool_ctx();
+
   //added by guokexin ,add para 4 , 20160505
   int open_bucket_pool_ctx(const string& bucket_name, const string& pool, librados::IoCtx&  io_ctx , int op_type = 0);
+  int open_objexp_pool_ctx();
+
   int open_bucket_index_ctx(rgw_bucket& bucket, librados::IoCtx&  index_ctx);
   //added by guokexin ,add para 3  20160505
   int open_bucket_data_ctx(rgw_bucket& bucket, librados::IoCtx&  io_ctx, int op_type = 0);
@@ -1411,6 +1414,7 @@ protected:
 
 
   librados::IoCtx gc_pool_ctx;        // .rgw.gc
+  librados::IoCtx objexp_pool_ctx;
 
   bool pools_initialized;
 
