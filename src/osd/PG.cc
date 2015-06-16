@@ -215,7 +215,7 @@ PG::PG(OSDService *o, OSDMapRef curmap,
   active_pushes(0),
   recovery_state(this),
   pg_id(p),
-  peer_features(CEPH_FEATURES_SUPPORTED_DEFAULT)
+  peer_features(CEPH_FEATURES_SUPPORTED_DEFAULT),
   last_epoch(0)
 {
 #ifdef PG_DEBUG_REFS
