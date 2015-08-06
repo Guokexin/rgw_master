@@ -1263,10 +1263,6 @@ void ReplicatedPG::do_request(
   OpRequestRef& op,
   ThreadPool::TPHandle &handle)
 {
-  if (!op_has_sufficient_caps(op)) {
-    osd->reply_op_error(op, -EPERM);
-    return;
-  }
   assert(!op_must_wait_for_map(get_osdmap()->get_epoch(), op));
   if (can_discard_request(op)) {
     return;
@@ -1387,6 +1383,9 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
   assert(m->get_type() == CEPH_MSG_OSD_OP);
 
+  m->finish_decode();
+  m->clear_payload();
+
   if (op->rmw_flags == 0) {
     int r = osd->osd->init_op_flags(op);
     if (r) {
@@ -1418,6 +1417,11 @@ void ReplicatedPG::do_op(OpRequestRef& op)
       return;
     }
     return do_pg_op(op);
+  }
+
+  if (!op_has_sufficient_caps(op)) {
+    osd->reply_op_error(op, -EPERM);
+    return;
   }
 
   // object name too long?
