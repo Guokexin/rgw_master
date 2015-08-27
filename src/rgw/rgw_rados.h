@@ -1282,6 +1282,7 @@ class Finisher;
 class RGWRados
 {
   friend class RGWGC;
+  friend class RGWObjectExpirer;
   friend class RGWStateLog;
   friend class RGWReplicaLogger;
 
