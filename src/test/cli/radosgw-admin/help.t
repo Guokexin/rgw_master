@@ -27,6 +27,7 @@
     bucket modify_storage_policy        set bucket storage_policy
     object rm                  remove object
     object unlink              unlink object from bucket index
+    objects expire             run expired objects cleanup
     quota set                  set quota params
     quota enable               enable quota
     quota disable              disable quota
