@@ -3422,7 +3422,7 @@ string RGWRados::objexp_hint_get_shardname(const utime_t &ts)
   char buf[32];
   snprintf(buf, sizeof(buf), "%010u", shnum);
 
-  string objname("time_index_hint.");
+  string objname("obj_delete_at_hint.");
   return objname + buf;
 }
 
