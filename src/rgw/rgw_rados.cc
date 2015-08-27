@@ -49,6 +49,7 @@ using namespace librados;
 #include "rgw_log.h"
 
 #include "rgw_gc.h"
+#include "rgw_object_expirer_core.h"
 
 /*Begin added by guokexin*/
 #include "rgw_archive_op.h"
@@ -2127,9 +2128,14 @@ void RGWRados::finalize()
   delete data_log;
   if (use_gc_thread) {
     gc->stop_processor();
-    delete gc;
-    gc = NULL;
+    obj_expirer->stop_processor();
   }
+  delete gc;
+  gc = NULL;
+
+  delete obj_expirer;
+  obj_expirer = NULL;
+
   delete rest_master_conn;
 
   /*Begin added by lujiafu*/
@@ -2646,8 +2652,12 @@ int RGWRados::init_complete()
   gc = new RGWGC();
   gc->initialize(cct, this);
 
-  if (use_gc_thread)
+  obj_expirer = new RGWObjectExpirer(this);
+
+  if (use_gc_thread) {
     gc->start_processor();
+    obj_expirer->start_processor();
+  }
 
   quota_handler = RGWQuotaHandler::generate_handler(this, quota_threads);
 
