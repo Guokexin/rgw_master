@@ -2810,9 +2810,10 @@ bool PG::_has_removal_flag(ObjectStore *store,
   return false;
 }
 
-epoch_t PG::peek_map_epoch(ObjectStore *store,
-			   spg_t pgid,
-			   bufferlist *bl)
+int PG::peek_map_epoch(ObjectStore *store,
+		       spg_t pgid,
+		       epoch_t *pepoch,
+		       bufferlist *bl)
 {
   coll_t coll(pgid);
   hobject_t legacy_infos_oid(OSD::make_infos_oid());
@@ -2857,7 +2858,8 @@ epoch_t PG::peek_map_epoch(ObjectStore *store,
       return 0;
     if (struct_v < 6) {
       ::decode(cur_epoch, bp);
-      return cur_epoch;
+      *pepoch = cur_epoch;
+      return 0;
     }
 
     // get epoch out of leveldb
@@ -2872,7 +2874,8 @@ epoch_t PG::peek_map_epoch(ObjectStore *store,
   } else {
     assert(0 == "unable to open pg metadata");
   }
-  return cur_epoch;
+  *pepoch = cur_epoch;
+  return 0;
 }
 
 #pragma GCC diagnostic pop
