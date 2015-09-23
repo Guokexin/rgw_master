@@ -6208,7 +6208,6 @@ void OSD::handle_osd_map(MOSDMap *m)
   ObjectStore::Transaction &t = *_t;
 
   // store new maps: queue for disk and put in the osdmap cache
-  epoch_t last_marked_full = 0;
   epoch_t start = MAX(superblock.newest_map + 1, first);
   for (epoch_t e = start; e <= last; e++) {
     map<epoch_t,bufferlist>::iterator p;
@@ -6219,8 +6218,6 @@ void OSD::handle_osd_map(MOSDMap *m)
       bufferlist& bl = p->second;
       
       o->decode(bl);
-      if (o->test_flag(CEPH_OSDMAP_FULL))
-	last_marked_full = e;
 
       hobject_t fulloid = get_osdmap_pobject_name(e);
       t.write(META_COLL, fulloid, 0, bl.length(), bl);
@@ -6251,9 +6248,6 @@ void OSD::handle_osd_map(MOSDMap *m)
 	derr << "ERROR: bad fsid?  i have " << osdmap->get_fsid() << " and inc has " << inc.fsid << dendl;
 	assert(0 == "bad fsid");
       }
-
-      if (o->test_flag(CEPH_OSDMAP_FULL))
-	last_marked_full = e;
 
       bufferlist fbl;
       o->encode(fbl, inc.encode_features | CEPH_FEATURE_RESERVED);
@@ -6332,9 +6326,6 @@ void OSD::handle_osd_map(MOSDMap *m)
     superblock.clean_thru = last;
   }
 
-  if (last_marked_full > superblock.last_map_marked_full)
-    superblock.last_map_marked_full = last_marked_full;
- 
   // superblock and commit
   write_superblock(t);
   store->queue_transaction(
