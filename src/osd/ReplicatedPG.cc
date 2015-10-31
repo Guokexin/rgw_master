@@ -1486,7 +1486,8 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 		m->get_object_locator().nspace);
 
   // io blocked on obc?
-  if (((m->get_flags() & CEPH_OSD_FLAG_FLUSH) == 0) &&
+  if ((pool.info.is_tier() || pool.info.has_tiers()) && 
+      ((m->get_flags() & CEPH_OSD_FLAG_FLUSH) == 0) &&
       maybe_await_blocked_snapset(oid, op)) {
     return;
   }
