@@ -1030,7 +1030,7 @@ public:
     Mutex::Locker l(throttle_lock);
     if (throttle_req.empty()) {
       /* does this io must wait */
-      must_wait = throttle.schedule_timer(is_write);
+      must_wait = throttle.schedule_timer(is_write, false);
     }
     /* if must wait or any request of this type throttled queue the IO */
     if (must_wait) {

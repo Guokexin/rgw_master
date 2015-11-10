@@ -17,7 +17,7 @@
 #include "common/Clock.h"
 #include "LeakyBucketThrottle.h"
 
-#define dout_subsys ceph_subsys_rbd
+#define dout_subsys ceph_subsys_throttle
 #undef dout_prefix
 #define dout_prefix *_dout << "LeakyBucketThrottle::"
 
@@ -124,13 +124,16 @@ bool LeakyBucketThrottle::config(BucketType type, double avg, double max)
     local[type].avg = avg;
   if (max)
     local[type].max = max;
-  if (throttle_conflicting(local))
+  if (throttle_conflicting(local)) {
+    ldout(cct, 0) << "Leaky bucket throttle configs conflict, aborting" << dendl;
     return false;
+  }
 
   buckets[type].avg = local[type].avg;
   // Ensure max value isn't zero if avg not zero
   buckets[type].max = MAX(local[type].avg, local[type].max);
   enable = throttle_enabling(buckets);
+  ldout(cct, 20) << "Leaky bucket throttle is " << (enable ? "enabled" : "NOT enabled") << dendl;
   return true;
 }
 
@@ -198,6 +201,8 @@ bool LeakyBucketThrottle::schedule_timer(bool release_timer_wait)
   }
 
   /* request throttled and timer not pending -> arm timer */
+  ldout(cct, 20) << __func__ << " timer_wait is " << timer_wait[0]
+                 << " add event after " << wait << " seconds" << dendl;
   if (!timer_wait[0]) {
     assert(timer_cb[0]);
     timer.add_event_after(wait, timer_cb[0]);
@@ -337,7 +342,7 @@ double LeakyBucketThrottle::throttle_compute_wait_for(bool is_write)
                                  THROTTLE_OPS_TOTAL,
                                  THROTTLE_BPS_WRITE,
                                  THROTTLE_OPS_WRITE}, };
-  double wait, max_wait = 0;
+  double wait = 0, max_wait = 0;
 
   for (int i = 0; i < 4; i++) {
     BucketType index = to_check[is_write][i];
@@ -358,7 +363,7 @@ double LeakyBucketThrottle::throttle_compute_wait_for(bool is_write)
 double LeakyBucketThrottle::throttle_compute_wait_for()
 {
   BucketType to_check[2] = {THROTTLE_BPS_TOTAL, THROTTLE_OPS_TOTAL};
-  double wait, max_wait = 0;
+  double wait = 0, max_wait = 0;
 
   for (int i = 0; i < 2; i++) {
     BucketType index = to_check[i];
@@ -378,7 +383,7 @@ double LeakyBucketThrottle::throttle_compute_wait_for()
  * @substract_size:     the size to substract 
  */
 void LeakyBucketThrottle::adjust(BucketType type, uint64_t add_size,
-                              uint64_t substract_size)
+                                 uint64_t substract_size)
 {
   assert(type == THROTTLE_BPS_TOTAL || type == THROTTLE_OPS_TOTAL);
   Mutex::Locker l(lock);

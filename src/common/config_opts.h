@@ -636,6 +636,10 @@ OPTION(osd_use_stale_snap, OPT_BOOL, false)
 OPTION(osd_rollback_to_cluster_snap, OPT_STR, "")
 OPTION(osd_default_notify_timeout, OPT_U32, 30) // default notify timeout in seconds
 OPTION(osd_kill_backfill_at, OPT_INT, 0)
+OPTION(osd_recovery_throttle_bw, OPT_U64, 20000000)     // average recovery bw
+OPTION(osd_recovery_throttle_bw_max, OPT_U64, 40000000) // burst recovery bw
+OPTION(osd_recovery_throttle_ops, OPT_U64, 5)           // average recovery ops 
+OPTION(osd_recovery_throttle_ops_max, OPT_U64, 10)      // burst recovery ops
 
 // Bounds how infrequently a new map epoch will be persisted for a pg
 OPTION(osd_pg_epoch_persisted_max_stale, OPT_U32, 200)

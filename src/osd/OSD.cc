@@ -1571,6 +1571,8 @@ OSD::OSD(CephContext *cct_, ObjectStore *store_,
     cct->_conf->osd_command_thread_suicide_timeout,
     &command_tp),
   recovery_ops_active(0),
+  rec_throttle(cct, 0),
+  rec_throttle_lock("OSD::rec_throttle_lock"),
   recovery_wq(
     this,
     cct->_conf->osd_recovery_thread_timeout,
@@ -8547,6 +8549,10 @@ const char** OSD::get_tracked_conf_keys() const
     "clog_to_syslog",
     "clog_to_syslog_facility",
     "clog_to_syslog_level",
+    "osd_recovery_throttle_bw",
+    "osd_recovery_throttle_bw_max",
+    "osd_recovery_throttle_ops",
+    "osd_recovery_throttle_ops_max",
     NULL
   };
   return KEYS;
@@ -8587,6 +8593,20 @@ void OSD::handle_conf_change(const struct md_config_t *conf,
       changed.count("clog_to_syslog_level") ||
       changed.count("clog_to_syslog_facility")) {
     update_log_config();
+  }
+  bool enabled_pre = rec_throttle.enabled();
+  if (changed.count("osd_recovery_throttle_bw") ||
+      changed.count("osd_recovery_throttle_bw_max")) {
+    rec_throttle.config(THROTTLE_BPS_TOTAL, cct->_conf->osd_recovery_throttle_bw,
+                        cct->_conf->osd_recovery_throttle_bw_max);
+  }
+  if (changed.count("osd_recovery_throttle_ops") ||
+      changed.count("osd_recovery_throttle_ops_max")) {
+    rec_throttle.config(THROTTLE_OPS_TOTAL, cct->_conf->osd_recovery_throttle_ops,
+                        cct->_conf->osd_recovery_throttle_ops_max);
+  }
+  if (!enabled_pre && rec_throttle.enabled()) {
+    rec_throttle.attach_context(new RecThrottleContext(this));
   }
 
   check_config();
@@ -8772,4 +8792,31 @@ void OSD::PeeringWQ::_dequeue(list<PG*> *out) {
         }
   }
   in_use.insert(got.begin(), got.end());
+}
+
+void OSD::process_throttled_recoveries()
+{
+  dout(20) << __func__ << dendl;
+  rec_throttle_lock.Lock();
+  while (!throttled_recs.empty()) {
+    if (rec_throttle.schedule_timer(true))
+      break;
+
+    // Start the recovery op
+    boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> throttled_rec =
+      throttled_recs.front();
+    throttled_recs.pop_front();
+    ReplicatedPG *pg = dynamic_cast<ReplicatedPG*>(boost::get<0>(throttled_rec));
+    PGBackend::RecoveryHandle *rec_handle = boost::get<1>(throttled_rec);
+    int priority = boost::get<2>(throttled_rec);
+    rec_throttle_lock.Unlock(); // release the throttle lock to avoid deadlock with pg lock
+    pg->lock();
+    bool more = pg->get_pgbackend()->run_recovery_op_throttle(rec_handle, priority, true);
+    pg->unlock();
+    rec_throttle_lock.Lock();
+    if (more) {
+      throttled_recs.push_front(throttled_rec);
+    }
+  }
+  rec_throttle_lock.Unlock();
 }

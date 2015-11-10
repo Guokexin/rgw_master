@@ -389,6 +389,17 @@ void ReplicatedPG::wait_for_unreadable_object(
   map<hobject_t, ObjectContextRef>::const_iterator p = recovering.find(soid);
   if (p != recovering.end()) {
     dout(7) << "missing " << soid << " v " << v << ", already recovering." << dendl;
+    get_rec_throttle_lock();
+    for (list<boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> >::iterator it =
+	 get_throttled_recs().begin(); it != get_throttled_recs().end(); ) {
+      bool more = pgbackend->force_throttled_rec(boost::get<1>(*it), soid);
+      if (!more) {
+	it = get_throttled_recs().erase(it);
+      } else {
+	++it;
+      }
+    }
+    put_rec_throttle_lock();
   } else if (missing_loc.is_unfound(soid)) {
     dout(7) << "missing " << soid << " v " << v << ", is unfound." << dendl;
   } else {
@@ -446,6 +457,17 @@ void ReplicatedPG::wait_for_degraded_object(const hobject_t& soid, OpRequestRef 
 	    << soid 
 	    << ", already recovering"
 	    << dendl;
+    get_rec_throttle_lock();
+    for (list<boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> >::iterator it =
+	 get_throttled_recs().begin(); it != get_throttled_recs().end(); ) {
+      bool more = pgbackend->force_throttled_rec(boost::get<1>(*it), soid);
+      if (!more) {
+	it = get_throttled_recs().erase(it);
+      } else {
+	++it;
+      }
+    }
+    put_rec_throttle_lock();
   } else if (missing_loc.is_unfound(soid)) {
     dout(7) << "degraded "
 	    << soid

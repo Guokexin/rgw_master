@@ -50,6 +50,17 @@ public:
     PGBackend::RecoveryHandle *h,
     int priority);
 
+  /// @see PGBackend::run_recovery_op_throttle
+  bool run_recovery_op_throttle(
+    PGBackend::RecoveryHandle *h,
+    int priority,
+    bool lock_held=false);
+
+  /// @see PGBackend::force_throttled_rec
+  bool force_throttled_rec(
+    PGBackend::RecoveryHandle *_h,
+    const hobject_t &soid);
+
   /// @see PGBackend::recover_object
   void recover_object(
     const hobject_t &hoid,
@@ -311,6 +322,13 @@ private:
     const ObjectRecoveryInfo& recovery_info,
     SnapSetContext *ssc
     );
+  void send_single_push(int prio,
+                        map<pg_shard_t, vector<PushOp> > &pushes,
+			bool lock_held);
+  void send_single_pull(int prio,
+                        map<pg_shard_t, vector<PullOp> > &pulls,
+			bool lock_held);
+
 
   /**
    * Client IO
