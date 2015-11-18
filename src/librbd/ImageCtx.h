@@ -29,7 +29,7 @@
 #include "librbd/ObjectMap.h"
 #include "librbd/SnapInfo.h"
 #include "librbd/parent_types.h"
-#include "librbd/Throttle.h"
+#include "common/LeakyBucketThrottle.h"
 
 class CephContext;
 class ContextWQ;
@@ -128,7 +128,7 @@ namespace librbd {
     xlist<AsyncRequest*> async_requests;
     Cond async_requests_cond;
 
-    BlockThrottle throttle;
+    LeakyBucketThrottle throttle;
     std::list<AioRequest*> throttle_req;
 
     ObjectMap object_map;
