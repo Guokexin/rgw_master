@@ -23,7 +23,9 @@
 
 LeakyBucketThrottle::LeakyBucketThrottle(CephContext *c, uint64_t op_size)
   : cct(c), op_size(op_size), lock("LeakyBucketThrottle::lock"),
-    timer(c, lock, true), enable(false)
+    timer(c, lock, true), enable(false), mode(THROTTLE_MODE_NONE),
+    client_bw_threshold(0), client_iops_threshold(0),
+    avg_is_max(false), avg_reset(false)
 {
   timer_cb[0] = timer_cb[1] = NULL;
   timer_wait[0] = timer_wait[1] = false;
@@ -53,12 +55,31 @@ void LeakyBucketThrottle::attach_context(Context *reader, Context *writer)
  *
  * @ret: true if throttling must be done else false
  */
-static bool throttle_enabling(const map<BucketType, LeakyBucket> &buckets)
+bool LeakyBucketThrottle::throttle_enabling()
 {
-  for (map<BucketType, LeakyBucket>::const_iterator it = buckets.begin();
-       it != buckets.end(); ++it) {
-    if (it->second.avg > 0) {
-      return true;
+  if (mode == THROTTLE_MODE_NONE) {
+    return false;
+  } else if (mode == THROTTLE_MODE_STATIC) {
+    for (map<BucketType, LeakyBucket>::const_iterator it = buckets.begin();
+         it != buckets.end(); ++it) {
+      if (it->second.avg > 0) {
+        return true;
+      }
+    }
+  } else if (mode == THROTTLE_MODE_DYNAMIC) {
+    // enalbe the throttle only when client threshold, lower limit and upper
+    // limit are all set.
+    if (client_bw_threshold > 0) {
+      if (buckets.count(THROTTLE_BPS_TOTAL) &&
+	  buckets[THROTTLE_BPS_TOTAL].min > 0 &&
+	  buckets[THROTTLE_BPS_TOTAL].max > 0)
+	return true;
+    }
+    if (client_iops_threshold > 0) {
+      if (buckets.count(THROTTLE_OPS_TOTAL) &&
+	  buckets[THROTTLE_OPS_TOTAL].min > 0 &&
+	  buckets[THROTTLE_OPS_TOTAL].max > 0)
+	return true;
     }
   }
 
@@ -121,7 +142,7 @@ bool LeakyBucketThrottle::config(BucketType type, double avg, double max)
   Mutex::Locker l(lock);
   map<BucketType, LeakyBucket> local(buckets);
   if (avg)
-    local[type].avg = avg;
+    local[type].avg = local[type].min = avg;
   if (max)
     local[type].max = max;
   if (throttle_conflicting(local)) {
@@ -129,10 +150,49 @@ bool LeakyBucketThrottle::config(BucketType type, double avg, double max)
     return false;
   }
 
+  buckets[type].min = local[type].min;
   buckets[type].avg = local[type].avg;
   // Ensure max value isn't zero if avg not zero
   buckets[type].max = MAX(local[type].avg, local[type].max);
-  enable = throttle_enabling(buckets);
+  enable = throttle_enabling();
+  ldout(cct, 20) << "Leaky bucket throttle is " << (enable ? "enabled" : "NOT enabled") << dendl;
+  avg_is_max = false;
+  avg_reset = false;
+  return true;
+}
+
+/* Set the throttling mode
+ *
+ * @_mode: the throttle mode to set. 0 - none, 1 - static, 2 - dynamic
+ */
+bool LeakyBucketThrottle::config_mode(int _mode)
+{
+  Mutex::Locker l(lock);
+
+  if (_mode == 0) {
+    mode = THROTTLE_MODE_NONE;
+  } else if (_mode == 1) {
+    mode = THROTTLE_MODE_STATIC;
+  } else if (_mode == 2) {
+    mode = THROTTLE_MODE_DYNAMIC;
+  } else {
+    ldout(cct, 0) << __func__ << " invalid mode " << _mode << ", aborting" << dendl;
+    return false;
+  }
+  enable = throttle_enabling();
+  ldout(cct, 20) << "Leaky bucket throttle is " << (enable ? "enabled" : "NOT enabled") << dendl;
+  return true;
+}
+
+bool LeakyBucketThrottle::config_client_threshold(int64_t bw_threshold,
+                                                  int64_t iops_threshold)
+{
+  Mutex::Locker l(lock);
+  if (bw_threshold)
+    client_bw_threshold = bw_threshold;
+  if (iops_threshold)
+    client_iops_threshold = iops_threshold;
+  enable = throttle_enabling();
   ldout(cct, 20) << "Leaky bucket throttle is " << (enable ? "enabled" : "NOT enabled") << dendl;
   return true;
 }
@@ -313,13 +373,17 @@ void LeakyBucketThrottle::throttle_do_leak()
  * @bkt: the leaky bucket we operate on
  * @ret: the resulting wait time in seconds or 0 if the operation can go through
  */
-double LeakyBucketThrottle::throttle_compute_wait(LeakyBucket *bkt)
+double LeakyBucketThrottle::throttle_compute_wait(LeakyBucket *bkt, bool allow_burst)
 {
   if (!bkt->avg)
     return 0;
 
   /* the number of extra units blocking the io */
-  double extra = bkt->level - bkt->max;
+  double extra = 0;
+  if (mode == THROTTLE_MODE_STATIC && allow_burst)
+    extra = bkt->level - bkt->max;
+  else
+    extra = bkt->level - bkt->avg;
 
   if (extra <= 0)
     return 0;
@@ -347,7 +411,7 @@ double LeakyBucketThrottle::throttle_compute_wait_for(bool is_write)
   for (int i = 0; i < 4; i++) {
     BucketType index = to_check[is_write][i];
     if (buckets.count(index))
-      wait = throttle_compute_wait(&buckets[index]);
+      wait = throttle_compute_wait(&buckets[index], true);
 
     if (wait > max_wait)
       max_wait = wait;
@@ -368,7 +432,7 @@ double LeakyBucketThrottle::throttle_compute_wait_for()
   for (int i = 0; i < 2; i++) {
     BucketType index = to_check[i];
     if (buckets.count(index))
-      wait = throttle_compute_wait(&buckets[index]);
+      wait = throttle_compute_wait(&buckets[index], false);
 
     if (wait > max_wait)
       max_wait = wait;
@@ -387,6 +451,66 @@ void LeakyBucketThrottle::adjust(BucketType type, uint64_t add_size,
 {
   assert(type == THROTTLE_BPS_TOTAL || type == THROTTLE_OPS_TOTAL);
   Mutex::Locker l(lock);
-  buckets[type].level += add_size;
-  buckets[type].level -= substract_size;
+  if (buckets.count(type)) {
+    buckets[type].level += add_size;
+    buckets[type].level -= substract_size;
+  }
+}
+
+/*
+ * increase an unit on the bucket average for the dynamic mode
+ */
+void LeakyBucketThrottle::increase_bucket_average()
+{
+  Mutex::Locker l(lock);
+  if (avg_is_max)
+    return;
+
+  avg_reset = false;
+  uint32_t num_max = 0;
+  for (map<BucketType, LeakyBucket>::iterator it = buckets.begin();
+       it != buckets.end(); ++it) {
+    if (it->first == THROTTLE_BPS_TOTAL) {
+      double new_avg = it->second.avg + THROTTLE_BPS_INCREASE_UNIT;
+      if (new_avg < it->second.max) {
+        it->second.avg = new_avg;
+      } else {
+        it->second.avg = it->second.max;
+	num_max++;
+      }
+      ldout(cct, 10) << __func__ << " increase throttle bw to " << it->second.avg << dendl;
+    } else if (it->first == THROTTLE_OPS_TOTAL) {
+      double new_avg = it->second.avg + THROTTLE_OPS_INCREASE_UNIT;
+      if (new_avg <= it->second.max) {
+        it->second.avg = new_avg;
+      } else {
+        it->second.avg = it->second.max;
+	num_max++;
+      }
+      ldout(cct, 10) << __func__ << " increase throttle iops to " << it->second.avg << dendl;
+    }
+  }
+  if (num_max == buckets.size())
+    avg_is_max = true;
+
+  return;
+}
+
+/*
+ * reset the bucket average for the dynamic mode
+ */
+void LeakyBucketThrottle::reset_bucket_average()
+{
+  Mutex::Locker l(lock);
+  if (avg_reset)
+    return;
+
+  avg_is_max = false;
+  for (map<BucketType, LeakyBucket>::iterator it = buckets.begin();
+       it != buckets.end(); ++it) {
+    it->second.avg = it->second.min;
+  }
+  avg_reset = true;
+  ldout(cct, 10) << __func__ << " reset throttle bw/iops to min" << dendl;
+  return;
 }

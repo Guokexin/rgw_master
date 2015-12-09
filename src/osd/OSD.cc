@@ -3974,6 +3974,10 @@ void OSD::tick()
 
   check_ops_in_flight();
 
+  // adjust the dynamic mode recovery throttle based on client io rate
+  if (rec_throttle.enabled())
+    adjust_recovery_throttle();
+
   tick_timer.add_event_after(1.0, new C_Tick(this));
 }
 
@@ -8549,10 +8553,13 @@ const char** OSD::get_tracked_conf_keys() const
     "clog_to_syslog",
     "clog_to_syslog_facility",
     "clog_to_syslog_level",
+    "osd_recovery_throttle_mode",
     "osd_recovery_throttle_bw",
     "osd_recovery_throttle_bw_max",
+    "osd_recovery_throttle_bw_client_threshold",
     "osd_recovery_throttle_ops",
     "osd_recovery_throttle_ops_max",
+    "osd_recovery_throttle_ops_client_threshold",
     NULL
   };
   return KEYS;
@@ -8595,15 +8602,26 @@ void OSD::handle_conf_change(const struct md_config_t *conf,
     update_log_config();
   }
   bool enabled_pre = rec_throttle.enabled();
-  if (changed.count("osd_recovery_throttle_bw") ||
-      changed.count("osd_recovery_throttle_bw_max")) {
-    rec_throttle.config(THROTTLE_BPS_TOTAL, cct->_conf->osd_recovery_throttle_bw,
-                        cct->_conf->osd_recovery_throttle_bw_max);
+  if (changed.count("osd_recovery_throttle_mode")) {
+    rec_throttle.config_mode(cct->_conf->osd_recovery_throttle_mode);
   }
-  if (changed.count("osd_recovery_throttle_ops") ||
-      changed.count("osd_recovery_throttle_ops_max")) {
-    rec_throttle.config(THROTTLE_OPS_TOTAL, cct->_conf->osd_recovery_throttle_ops,
-                        cct->_conf->osd_recovery_throttle_ops_max);
+  if (changed.count("osd_recovery_throttle_bw")) {
+    rec_throttle.config(THROTTLE_BPS_TOTAL, cct->_conf->osd_recovery_throttle_bw, 0);
+  }
+  if (changed.count("osd_recovery_throttle_bw_max")) {
+    rec_throttle.config(THROTTLE_BPS_TOTAL, 0, cct->_conf->osd_recovery_throttle_bw_max);
+  }
+  if (changed.count("osd_recovery_throttle_ops")) {
+    rec_throttle.config(THROTTLE_OPS_TOTAL, cct->_conf->osd_recovery_throttle_ops, 0);
+  }
+  if (changed.count("osd_recovery_throttle_ops_max")) {
+    rec_throttle.config(THROTTLE_OPS_TOTAL, 0, cct->_conf->osd_recovery_throttle_ops_max);
+  }
+  if (changed.count("osd_recovery_throttle_bw_client_threshold")) {
+    rec_throttle.config_client_threshold(cct->_conf->osd_recovery_throttle_bw_client_threshold, 0);
+  }
+  if (changed.count("osd_recovery_throttle_ops_client_threshold")) {
+    rec_throttle.config_client_threshold(0, cct->_conf->osd_recovery_throttle_ops_client_threshold);
   }
   if (!enabled_pre && rec_throttle.enabled()) {
     rec_throttle.attach_context(new RecThrottleContext(this));
@@ -8819,4 +8837,56 @@ void OSD::process_throttled_recoveries()
     }
   }
   rec_throttle_lock.Unlock();
+}
+
+/*
+ * NOTE: sum all the object stats in this OSD. The summed stats is used to
+ * calculate the rough bw and IOPS on this OSD. PG lock is not taken here.
+ */
+void OSD::get_object_stats_sum(object_stat_collection_t &stat_sum)
+{
+  dout(20) << __func__ << dendl;
+
+  stat_sum.floor(0);
+  for (ceph::unordered_map<spg_t, PG*>::iterator p = pg_map.begin();
+       p != pg_map.end();
+       ++p) {
+    PG *pg = p->second;
+    if (pg->is_primary()) {
+      stat_sum.add(pg->info.stats.stats);
+    }
+  }
+}
+
+/*
+ * NOTE: adjust the recovery throttle in dynamic mode
+ */
+void OSD::adjust_recovery_throttle()
+{
+  dout(20) << __func__ << " recovery throttle mode is "
+           << rec_throttle.get_mode() << dendl;
+
+  if (rec_throttle.get_mode() == THROTTLE_MODE_DYNAMIC) {
+    object_stat_collection_t object_stats_sum;
+    get_object_stats_sum(object_stats_sum);
+    utime_t ts = ceph_clock_now(cct);
+    int64_t client_bw = 0, client_iops = 0;
+    if (!last_object_stats_sum.is_zero()) {
+      object_stat_collection_t delta_sum = object_stats_sum;
+      delta_sum.sub(last_object_stats_sum);
+      delta_sum.floor(0);
+      utime_t delta_ts = ts - last_object_stats_sum_ts;
+      client_bw = (delta_sum.sum.num_rd_kb + delta_sum.sum.num_wr_kb) / delta_ts;
+      client_iops = (delta_sum.sum.num_rd + delta_sum.sum.num_wr) / (double)delta_ts;
+    }
+    last_object_stats_sum = object_stats_sum;
+    last_object_stats_sum_ts = ts;
+
+    if (client_bw <= cct->_conf->osd_recovery_throttle_bw_client_threshold &&
+        client_iops <= cct->_conf->osd_recovery_throttle_ops_client_threshold) {
+      rec_throttle.increase_bucket_average();
+    } else {
+      rec_throttle.reset_bucket_average();
+    }
+  }
 }

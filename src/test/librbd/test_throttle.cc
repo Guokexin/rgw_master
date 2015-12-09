@@ -80,28 +80,28 @@ TEST_F(TestThrottle, test_compute_wait) {
   bkt.avg = 0;
   bkt.max = 15;
   bkt.level = 1.5;
-  wait = throttle->throttle_compute_wait(&bkt);
+  wait = throttle->throttle_compute_wait(&bkt, true);
   ASSERT_TRUE(!wait);
 
   /* zero delta */
   bkt.avg = 150;
   bkt.max = 15;
   bkt.level = 15;
-  wait = throttle->throttle_compute_wait(&bkt);
+  wait = throttle->throttle_compute_wait(&bkt, true);
   ASSERT_TRUE(!wait);
 
   /* below zero delta */
   bkt.avg = 150;
   bkt.max = 15;
   bkt.level = 9;
-  wait = throttle->throttle_compute_wait(&bkt);
+  wait = throttle->throttle_compute_wait(&bkt, true);
   ASSERT_TRUE(!wait);
 
   /* half an operation above max */
   bkt.avg = 150;
   bkt.max = 15;
   bkt.level = 15.5;
-  wait = throttle->throttle_compute_wait(&bkt);
+  wait = throttle->throttle_compute_wait(&bkt, true);
   /* time required to do half an operation */
   result = 0.5 / 150;
   ASSERT_EQ(wait, result);

@@ -2012,6 +2012,10 @@ protected:
     }
   };
 
+  // -- object stats sum --
+  object_stat_collection_t last_object_stats_sum;
+  utime_t last_object_stats_sum_ts;
+
   struct RecoveryWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
     RecoveryWQ(OSD *o, time_t ti, time_t si, ThreadPool *tp)
@@ -2059,7 +2063,9 @@ protected:
   void finish_recovery_op(PG *pg, const hobject_t& soid, bool dequeue);
   void do_recovery(PG *pg, ThreadPool::TPHandle &handle);
   bool _recover_now();
-  void process_throttled_recoveries(); 
+  void process_throttled_recoveries();
+  void get_object_stats_sum(object_stat_collection_t &stat_sum);
+  void adjust_recovery_throttle();
 
   // replay / delayed pg activation
   Mutex replay_queue_lock;
