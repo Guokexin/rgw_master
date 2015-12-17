@@ -1573,6 +1573,7 @@ OSD::OSD(CephContext *cct_, ObjectStore *store_,
   recovery_ops_active(0),
   rec_throttle(cct, 0),
   rec_throttle_lock("OSD::rec_throttle_lock"),
+  count_above_threshold(0), count_below_threshold(0),
   recovery_wq(
     this,
     cct->_conf->osd_recovery_thread_timeout,
@@ -8884,9 +8885,18 @@ void OSD::adjust_recovery_throttle()
 
     if (client_bw <= cct->_conf->osd_recovery_throttle_bw_client_threshold &&
         client_iops <= cct->_conf->osd_recovery_throttle_ops_client_threshold) {
-      rec_throttle.increase_bucket_average();
+      count_below_threshold++;
+      // reset above threshold count and increase bucket after 3 consecutive below threshold
+      if (count_below_threshold >= 3) {
+        count_above_threshold = 0;
+        rec_throttle.increase_bucket_average();
+      }
     } else {
-      rec_throttle.reset_bucket_average();
+      // reset below threshold count every time above threshold
+      count_below_threshold = 0;
+      count_above_threshold++;
+      if (count_above_threshold >= 3)
+        rec_throttle.reset_bucket_average();
     }
   }
 }

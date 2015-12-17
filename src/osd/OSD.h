@@ -2000,6 +2000,8 @@ protected:
   LeakyBucketThrottle rec_throttle;  // throttling recovery
   list<boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> > throttled_recs;  // list of throttled recoveries
   Mutex rec_throttle_lock;
+  uint64_t count_above_threshold;
+  uint64_t count_below_threshold;
  
   class RecThrottleContext : public Context {
     OSD *osd;
