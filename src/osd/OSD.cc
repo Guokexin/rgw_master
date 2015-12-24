@@ -1607,6 +1607,24 @@ OSD::OSD(CephContext *cct_, ObjectStore *store_,
                                          cct->_conf->osd_op_log_threshold);
   op_tracker.set_history_size_and_duration(cct->_conf->osd_op_history_size,
                                            cct->_conf->osd_op_history_duration);
+
+  rec_throttle.config_mode(cct->_conf->osd_recovery_throttle_mode);
+  if (rec_throttle.get_mode() == THROTTLE_MODE_STATIC) {
+    rec_throttle.config(THROTTLE_BPS_TOTAL, cct->_conf->osd_recovery_throttle_bw,
+                        cct->_conf->osd_recovery_throttle_bw_max);
+    rec_throttle.config(THROTTLE_OPS_TOTAL, cct->_conf->osd_recovery_throttle_ops,
+                        cct->_conf->osd_recovery_throttle_ops_max);
+  } else if (rec_throttle.get_mode() == THROTTLE_MODE_DYNAMIC) {
+    rec_throttle.config(THROTTLE_BPS_TOTAL, cct->_conf->osd_recovery_throttle_bw,
+                        cct->_conf->osd_recovery_throttle_bw_max);
+    rec_throttle.config(THROTTLE_OPS_TOTAL, cct->_conf->osd_recovery_throttle_ops,
+                        cct->_conf->osd_recovery_throttle_ops_max);
+    rec_throttle.config_client_threshold(cct->_conf->osd_recovery_throttle_bw_client_threshold,
+                                         cct->_conf->osd_recovery_throttle_ops_client_threshold);
+  }
+  if (rec_throttle.enabled()) {
+    rec_throttle.attach_context(new RecThrottleContext(this));
+  }
 }
 
 OSD::~OSD()
