@@ -1003,6 +1003,7 @@ int KeyValueStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
   }
 
   Op *o = build_op(tls, ondisk, onreadable, onreadable_sync, osd_op);
+  reset_coll_object_tbl(o->tls);
   op_queue_reserve_throttle(o, handle);
   dout(5) << "queue_transactions (trailing journal) " << " " << tls <<dendl;
   queue_op(osr, o);
