@@ -15,3 +15,7 @@ v0.94.3
 * The return code for librbd's rbd_aio_read and Image::aio_read API methods no
   longer returns the number of bytes read upon success.  Instead, it returns 0
   upon success and a negative value upon failure.
+
+* A new configure option 'mon_election_timeout' is added to specifically
+  limit max waiting time of monitor election process, which was previously
+  restricted by 'mon_lease'.
