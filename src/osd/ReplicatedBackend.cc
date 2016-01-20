@@ -1159,7 +1159,6 @@ void ReplicatedBackend::sub_op_modify_impl(OpRequestRef op)
 
   bufferlist::iterator p = m->get_data().begin();
   ::decode(rm->opt, p);
-  rm->bytes_written = rm->opt.get_encoded_bytes();
   ObjectStore::Transaction *localt = &(rm->opt);
 
   if (m->new_temp_oid != hobject_t()) {
