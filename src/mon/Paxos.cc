@@ -1284,6 +1284,7 @@ void Paxos::shutdown()
   if (logger)
     g_ceph_context->get_perfcounters_collection()->remove(logger);
   delete logger;
+  logger = NULL;
 }
 
 void Paxos::leader_init()
