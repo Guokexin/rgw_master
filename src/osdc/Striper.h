@@ -98,6 +98,10 @@ class CephContext;
        * @len the length of buffer
        */
       void assemble_result(CephContext *cct, char *buffer, size_t len);
+
+      void reset() {
+        partial.clear();
+      }
     };
 
   };
