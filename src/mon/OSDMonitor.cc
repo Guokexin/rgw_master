@@ -377,6 +377,7 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
 	// will also be brought back into sync when they discover the
 	// crc mismatch and request a full map from a mon.
 	derr << __func__ << " full map CRC mismatch, resetting to canonical"
+             << ", osdmap crc " << osdmap.crc << " inc crc " << inc.full_crc
 	     << dendl;
 	osdmap = OSDMap();
 	osdmap.decode(orig_full_bl);

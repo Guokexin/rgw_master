@@ -6258,7 +6258,11 @@ void OSD::handle_osd_map(MOSDMap *m)
 	dout(2) << "got incremental " << e
 		<< " but failed to encode full with correct crc; requesting"
 		<< dendl;
+	dout(20) << "osdmap crc " << o->get_crc() << " inc crc " << inc.full_crc << dendl;
 	clog->warn() << "failed to encode map e" << e << " with expected crc\n";
+	dout(20) << "my encoded map was:\n";
+	fbl.hexdump(*_dout);
+	*_dout << dendl;
 	delete o;
 	MMonGetOSDMap *req = new MMonGetOSDMap;
 	req->request_full(e, last);
