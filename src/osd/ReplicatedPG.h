@@ -457,6 +457,19 @@ public:
 
   LogClientTemp clog_error() { return osd->clog->error(); }
 
+  LeakyBucketThrottle* get_recovery_throttle() {
+    return &osd->osd->rec_throttle;
+  }
+  list<boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> >& get_throttled_recs() {
+    return osd->osd->throttled_recs;
+  }
+  void get_rec_throttle_lock() {
+    osd->osd->rec_throttle_lock.Lock();
+  }
+  void put_rec_throttle_lock() {
+    osd->osd->rec_throttle_lock.Unlock();
+  }
+
   /*
    * Capture all object state associated with an in-progress read or write.
    */

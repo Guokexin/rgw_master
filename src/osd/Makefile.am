@@ -25,7 +25,8 @@ libosd_la_SOURCES = \
 	osd/OpRequest.cc \
 	common/TrackedOp.cc \
 	osd/SnapMapper.cc \
-	objclass/class_api.cc
+	objclass/class_api.cc \
+	common/LeakyBucketThrottle.cc
 
 libosd_la_CXXFLAGS = ${AM_CXXFLAGS}
 if WITH_KINETIC
@@ -58,7 +59,8 @@ noinst_HEADERS += \
 	osd/ECMsgTypes.h \
 	osd/ECTransaction.h \
 	osd/Watch.h \
-	osd/osd_types.h
+	osd/osd_types.h \
+	common/LeakyBucketThrottle.h
 
 endif # WITH_OSD
 endif # ENABLE_SERVER

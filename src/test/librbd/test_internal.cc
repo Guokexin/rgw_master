@@ -420,7 +420,7 @@ TEST_F(TestInternal, ThrottleConfigAware) {
   close_image(ictx);
 
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
-  LeakyBucket buckets[BUCKETS_COUNT];
+  map<BucketType, LeakyBucket> buckets;
   ictx->throttle.get_config(buckets);
   ASSERT_TRUE(ictx->throttle.enabled());
   ASSERT_EQ(buckets[THROTTLE_BPS_TOTAL].avg, 1024000);

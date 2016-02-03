@@ -54,6 +54,7 @@ using namespace std;
 #include "common/sharedptr_registry.hpp"
 #include "common/PrioritizedQueue.h"
 #include "messages/MOSDOp.h"
+#include "common/LeakyBucketThrottle.h"
 
 #define CEPH_OSD_PROTOCOL    10 /* cluster internal */
 
@@ -1999,6 +2000,26 @@ protected:
 #ifdef DEBUG_RECOVERY_OIDS
   map<spg_t, set<hobject_t> > recovery_oids;
 #endif
+  LeakyBucketThrottle rec_throttle;  // throttling recovery
+  list<boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> > throttled_recs;  // list of throttled recoveries
+  Mutex rec_throttle_lock;
+  uint64_t count_above_threshold;
+  uint64_t count_below_threshold;
+ 
+  class RecThrottleContext : public Context {
+    OSD *osd;
+
+   public:
+    RecThrottleContext(OSD *_osd): osd(_osd) {}
+    virtual void finish(int r) {}
+    virtual void complete(int r) {
+      osd->process_throttled_recoveries();
+    }
+  };
+
+  // -- object stats sum --
+  object_stat_collection_t last_object_stats_sum;
+  utime_t last_object_stats_sum_ts;
 
   struct RecoveryWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
@@ -2047,6 +2068,9 @@ protected:
   void finish_recovery_op(PG *pg, const hobject_t& soid, bool dequeue);
   void do_recovery(PG *pg, ThreadPool::TPHandle &handle);
   bool _recover_now();
+  void process_throttled_recoveries();
+  void get_object_stats_sum(object_stat_collection_t &stat_sum);
+  void adjust_recovery_throttle();
 
   // replay / delayed pg activation
   Mutex replay_queue_lock;

@@ -26,6 +26,7 @@
 #include "os/ObjectStore.h"
 #include "common/LogClient.h"
 #include <string>
+#include "common/LeakyBucketThrottle.h"
 
  /**
   * PGBackend
@@ -45,6 +46,18 @@
    const coll_t coll;
    const coll_t temp_coll;
  public:	
+   /**
+    * RecoveryHandle
+    *
+    * We may want to recover multiple objects in the same set of
+    * messages.  RecoveryHandle is an interface for the opaque
+    * object used by the implementation to store the details of
+    * the pending recovery operations.
+    */
+   struct RecoveryHandle {
+     virtual ~RecoveryHandle() {}
+   };
+
    /**
     * Provides interfaces for PGBackend callbacks
     *
@@ -223,6 +236,11 @@
 
      virtual LogClientTemp clog_error() = 0;
 
+     virtual LeakyBucketThrottle* get_recovery_throttle() = 0;
+     virtual void get_rec_throttle_lock() = 0;
+     virtual void put_rec_throttle_lock() = 0;
+     virtual list<boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> >& get_throttled_recs() = 0;
+
      virtual ~Listener() {}
    };
    Listener *parent;
@@ -240,18 +258,6 @@
      return parent->gen_dbg_prefix();
    }
 
-   /**
-    * RecoveryHandle
-    *
-    * We may want to recover multiple objects in the same set of
-    * messages.  RecoveryHandle is an interface for the opaque
-    * object used by the implementation to store the details of
-    * the pending recovery operations.
-    */
-   struct RecoveryHandle {
-     virtual ~RecoveryHandle() {}
-   };
-
    /// Get a fresh recovery operation
    virtual RecoveryHandle *open_recovery_op() = 0;
 
@@ -260,6 +266,18 @@
      RecoveryHandle *h,     ///< [in] op to finish
      int priority           ///< [in] msg priority
      ) = 0;
+
+   /// run_recovery_op_throttle: finish the throttled operation represented by h
+   virtual bool run_recovery_op_throttle(
+     RecoveryHandle *h,     ///< [in] op to finish
+     int priority,          ///< [in] msg priority
+     bool lock_held=false
+     ) { return false; }
+
+   /// force_throttled_rec: force to start the throttled operation
+   virtual bool force_throttled_rec(
+     PGBackend::RecoveryHandle *_h,
+     const hobject_t &soid) { return false; }
 
    /**
     * recover_object

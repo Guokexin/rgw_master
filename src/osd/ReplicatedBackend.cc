@@ -21,6 +21,7 @@
 #include "messages/MOSDPGPush.h"
 #include "messages/MOSDPGPull.h"
 #include "messages/MOSDPGPushReply.h"
+#include "common/LeakyBucketThrottle.h"
 
 #define dout_subsys ceph_subsys_osd
 #define DOUT_PREFIX_ARGS this
@@ -74,6 +75,48 @@ void ReplicatedBackend::run_recovery_op(
   int priority)
 {
   RPGHandle *h = static_cast<RPGHandle *>(_h);
+  dout(20) << __func__ << " number of pushes: " << h->pushes.size() 
+           << ", number of pulls: " << h->pulls.size() << dendl;
+  LeakyBucketThrottle *throttle = get_parent()->get_recovery_throttle();
+  if (throttle->enabled()) {
+    // don't throttle for client op initiated recovery
+    if (priority >= cct->_conf->osd_client_op_priority) {
+      while (!h->pushes.empty()) {
+        send_single_push(priority, h->pushes, false);
+      }
+      while (!h->pulls.empty()) {
+        send_single_pull(priority, h->pulls, false);
+      }
+      delete h;
+      return;
+    }
+
+    while (!h->pushes.empty() || !h->pulls.empty()) {
+      /* does this io must wait */
+      bool must_wait = throttle->schedule_timer(false);
+
+      get_parent()->get_rec_throttle_lock();
+      /* if must wait or any request of this type throttled queue the IO */
+      if (must_wait || !get_parent()->get_throttled_recs().empty()) {
+        dout(20) << __func__ << " must_wait is " << (must_wait ? "true, " : "false, ")
+	         << "throttle rec's size=" << get_parent()->get_throttled_recs().size()
+		 << " hit limit, wait to send" << dendl;
+        get_parent()->get_throttled_recs().push_back(
+            boost::make_tuple(get_parent(), _h, priority));
+        get_parent()->put_rec_throttle_lock();
+        return;
+      }
+
+      get_parent()->put_rec_throttle_lock();
+      if (!h->pushes.empty()) {
+        send_single_push(priority, h->pushes, false);
+      } else if (!h->pulls.empty()) {
+        send_single_pull(priority, h->pulls, false);
+      }
+    }
+    delete h;
+    return;
+  }
   send_pushes(priority, h->pushes);
   send_pulls(priority, h->pulls);
   delete h;
@@ -1816,6 +1859,11 @@ bool ReplicatedBackend::handle_pull_response(
     pi.recovery_info.size = pop.recovery_info.size;
     pi.recovery_info.copy_subset.intersection_of(
       pop.recovery_info.copy_subset);
+    // adjust the level of the recovery throttle
+    LeakyBucketThrottle *throttle = get_parent()->get_recovery_throttle();
+    if (throttle->enabled()) {
+      throttle->adjust(THROTTLE_BPS_TOTAL, pop.cost(cct), response->cost(cct));
+    }
   }
 
   bool first = pi.recovery_progress.first;
@@ -2446,4 +2494,165 @@ int ReplicatedBackend::start_pushes(
     }
   }
   return pushes;
+}
+
+bool ReplicatedBackend::run_recovery_op_throttle(
+  PGBackend::RecoveryHandle *_h,
+  int priority, bool lock_held)
+{
+  RPGHandle *h = static_cast<RPGHandle *>(_h);
+  dout(20) << __func__ << " number of pushes: " << h->pushes.size() 
+           << ", number of pulls: " << h->pulls.size() << dendl;
+  if (!h->pushes.empty()) {
+    send_single_push(priority, h->pushes, lock_held);
+  } else if (!h->pulls.empty()) {
+    send_single_pull(priority, h->pulls, lock_held);
+  }
+  //if (h->pushes.empty() && h->pulls.empty()) {
+  //  get_parent()->get_rec_throttle_lock();
+  //  get_parent()->get_throttled_recs().pop_front();
+  //  get_parent()->put_rec_throttle_lock();
+  //  delete h;
+  //}
+  if (h->pushes.empty() && h->pulls.empty()) {
+    delete h;
+    return false;
+  }
+  return true;
+}
+
+void ReplicatedBackend::send_single_push(
+  int prio, map<pg_shard_t, vector<PushOp> > &pushes, bool lock_held)
+{
+  map<pg_shard_t, vector<PushOp> >::iterator i = pushes.begin();
+  while (i != pushes.end()) {
+    ConnectionRef con = get_parent()->get_con_osd_cluster(
+      i->first.osd,
+      get_osdmap()->get_epoch());
+    if (!con) {
+      ++i;
+      continue;
+    }
+    assert(!i->second.empty());
+    dout(20) << __func__ << ": sending push (legacy) " << i->second.front()
+             << " to osd." << i->first << dendl;
+    /* will push, do the accounting */
+    // get_parent()->get_rec_throttle_lock();
+    LeakyBucketThrottle *throttle = get_parent()->get_recovery_throttle();
+    throttle->account(i->second.front().cost(cct), lock_held);
+    // get_parent()->put_rec_throttle_lock();
+    send_push_op_legacy(prio, i->first, i->second.front());
+    i->second.erase(i->second.begin());
+    if (i->second.empty()) {
+      pushes.erase(i);
+    }
+    return;
+  }
+}
+
+void ReplicatedBackend::send_single_pull(
+  int prio, map<pg_shard_t, vector<PullOp> > &pulls, bool lock_held)
+{
+  map<pg_shard_t, vector<PullOp> >::iterator i = pulls.begin();
+  while (i != pulls.end()) {
+    ConnectionRef con = get_parent()->get_con_osd_cluster(
+      i->first.osd,
+      get_osdmap()->get_epoch());
+    if (!con) {
+      ++i;
+      continue;
+    }
+    assert(!i->second.empty());
+    dout(20) << __func__ << ": sending pull (legacy) " << i->second.front()
+             << " to osd." << i->first << dendl;
+    /* will pull, do the accounting */
+    // get_parent()->get_rec_throttle_lock();
+    LeakyBucketThrottle *throttle = get_parent()->get_recovery_throttle();
+    throttle->account(i->second.front().cost(cct), lock_held);
+    // get_parent()->put_rec_throttle_lock();
+    send_pull_legacy(prio, i->first,
+                     i->second.front().recovery_info,
+		     i->second.front().recovery_progress);
+    i->second.erase(i->second.begin());
+    if (i->second.empty()) {
+      pulls.erase(i);
+    }
+    return;
+  }
+}
+
+bool ReplicatedBackend::force_throttled_rec(
+  PGBackend::RecoveryHandle *_h, const hobject_t &soid)
+{
+  RPGHandle *h = static_cast<RPGHandle *>(_h);
+  dout(20) << __func__ << " for object " << soid
+           << ", number of pushes: " << h->pushes.size() 
+           << ", number of pulls: " << h->pulls.size() << dendl;
+  for (map<pg_shard_t, vector<PushOp> >::iterator i = h->pushes.begin();
+       i != h->pushes.end(); ) {
+    ConnectionRef con = get_parent()->get_con_osd_cluster(
+      i->first.osd, get_osdmap()->get_epoch());
+    if (!con) {
+      ++i;
+      continue;
+    }
+    vector<PushOp>::iterator j = i->second.begin();
+    while (j != i->second.end()) {
+      if (j->soid == soid) {
+        dout(20) << __func__ << ": sending push (legacy) " << *j
+                 << " to osd." << i->first << dendl;
+        /* will push, do the accounting */
+	get_parent()->put_rec_throttle_lock();
+        LeakyBucketThrottle *throttle = get_parent()->get_recovery_throttle();
+        throttle->account(j->cost(cct), false);
+        send_push_op_legacy(cct->_conf->osd_client_op_priority, i->first, *j);
+	get_parent()->get_rec_throttle_lock();
+	j = i->second.erase(j);
+      } else {
+	++j;
+      }
+    }
+    if (i->second.empty()) {
+      h->pushes.erase(i++);
+    } else {
+      ++i;
+    }
+  }
+
+  for (map<pg_shard_t, vector<PullOp> >::iterator i = h->pulls.begin();
+       i != h->pulls.end(); ) {
+    ConnectionRef con = get_parent()->get_con_osd_cluster(
+      i->first.osd, get_osdmap()->get_epoch());
+    if (!con) {
+      ++i;
+      continue;
+    }
+    vector<PullOp>::iterator j = i->second.begin();
+    while (j != i->second.end()) {
+      if (j->soid == soid) {
+        dout(20) << __func__ << ": sending pull (legacy) " << *j
+                 << " to osd." << i->first << dendl;
+        /* will pull, do the accounting */
+	get_parent()->put_rec_throttle_lock();
+        LeakyBucketThrottle *throttle = get_parent()->get_recovery_throttle();
+        throttle->account(j->cost(cct), false);
+        send_pull_legacy(cct->_conf->osd_client_op_priority, i->first,
+	                 j->recovery_info, j->recovery_progress);
+	get_parent()->get_rec_throttle_lock();
+	j = i->second.erase(j);
+      } else {
+	++j;
+      }
+    }
+    if (i->second.empty()) {
+      h->pulls.erase(i++);
+    } else {
+      ++i;
+    }
+  }
+
+  if (h->pushes.empty() && h->pulls.empty())
+    return false;
+  else
+    return true;
 }
