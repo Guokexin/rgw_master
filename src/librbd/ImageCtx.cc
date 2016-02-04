@@ -113,6 +113,8 @@ public:
     aio_work_queue = new ContextWQ("librbd::aio_work_queue",
                                    cct->_conf->rbd_op_thread_timeout,
                                    thread_pool_singleton);
+    // use STATIC mode for rbd throttling
+    throttle.config_mode(THROTTLE_MODE_STATIC);
   }
 
   ImageCtx::~ImageCtx() {
