@@ -39,6 +39,7 @@ class TestThrottle : public ::testing::Test {
   TestThrottle(): throttle(NULL) {}
   virtual void SetUp() {
     throttle = new LeakyBucketThrottle(g_ceph_context, 0);
+    throttle->config_mode(THROTTLE_MODE_STATIC);
   }
   virtual void TearDown() {
     delete throttle;
