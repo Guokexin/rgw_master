@@ -33,7 +33,7 @@ function run() {
     # check that erasure code plugins are preloaded
     CEPH_ARGS='' ./ceph --admin-daemon $dir/a/ceph-mon.a.asok log flush || return 1
     grep 'load: jerasure.*lrc' $dir/a/log || return 1
-    for id in $(seq 0 10) ; do
+    for id in $(seq 0 9) ; do
         run_osd $dir $id || return 1
     done
     # check that erasure code plugins are preloaded
