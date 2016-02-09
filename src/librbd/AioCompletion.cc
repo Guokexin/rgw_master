@@ -88,18 +88,13 @@ namespace librbd {
       break;
     }
 
-    // note: possible for image to be closed after op marked finished
-    if (async_op.started()) {
-      async_op.finish_op();
-    }
-
+    done = true;
     if (complete_cb) {
       lock.Unlock();
       complete_cb(rbd_comp, complete_arg);
       lock.Lock();
     }
 
-    done = true;
     if (ictx && event_notify && ictx->event_socket.is_valid()) {
       ictx->completed_reqs_lock.Lock();
       ictx->completed_reqs.push_back(&m_xlist_item);
@@ -107,6 +102,11 @@ namespace librbd {
       ictx->event_socket.notify();
     }
     cond.Signal();
+
+    // note: possible for image to be closed after op marked finished
+    if (async_op.started()) {
+      async_op.finish_op();
+    }
     tracepoint(librbd, aio_complete_exit);
   }
 
