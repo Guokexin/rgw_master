@@ -1230,6 +1230,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     _buffers.clear();
     if (nb.length())
       _buffers.push_back(nb);
+    last_p = begin();
   }
 
 void buffer::list::rebuild_aligned(unsigned align)
@@ -1277,6 +1278,7 @@ void buffer::list::rebuild_aligned_size_and_memory(unsigned align_size,
     }
     _buffers.insert(p, unaligned._buffers.front());
   }
+  last_p = begin();
 }
 
 void buffer::list::rebuild_page_aligned()
