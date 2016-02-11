@@ -1504,6 +1504,8 @@ void buffer::list::rebuild_page_aligned()
       return c_str() + orig_off;
     }
 
+    last_p = begin();  // we modified _buffers
+
     return curbuf->c_str() + off;
   }
 
