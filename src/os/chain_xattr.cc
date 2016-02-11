@@ -377,7 +377,7 @@ int chain_fremovexattr(int fd, const char *name)
 
 // listxattr
 
-int chain_listxattr(const char *fn, char *names, size_t len) {
+int chain_listxattr(const char *fn, char *names, size_t len, map<string, int> *chunks) {
   int r;
 
   if (!len)
@@ -416,6 +416,9 @@ int chain_listxattr(const char *fn, char *names, size_t len) {
       strcpy(dest, name);
       dest += name_len + 1;
     }
+    if (chunks && (strncmp(name, "user.ceph.", 10) == 0)) {
+      (*chunks)[name + 10]++;
+    }
     p += attr_len + 1;
   }
   r = dest - names;
@@ -425,7 +428,7 @@ done:
   return r;
 }
 
-int chain_flistxattr(int fd, char *names, size_t len) {
+int chain_flistxattr(int fd, char *names, size_t len, map<string, int> *chunks) {
   int r;
   char *p;
   const char * end;
@@ -465,6 +468,9 @@ int chain_flistxattr(int fd, char *names, size_t len) {
       }
       strcpy(dest, name);
       dest += name_len + 1;
+    }
+    if (chunks && (strncmp(name, "user.ceph.", 10) == 0)) {
+      (*chunks)[name + 10]++;
     }
     p += attr_len + 1;
   }
