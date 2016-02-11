@@ -664,9 +664,10 @@ public:
   int _do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff);
   int _remove(coll_t cid, const ghobject_t& oid, const SequencerPosition &spos, int osr);
 
-  int _fgetattr(int fd, const char *name, bufferptr& bp);
-  int _fgetattrs(int fd, map<string,bufferptr>& aset);
-  int _fsetattrs(int fd, map<string, bufferptr> &aset);
+  int _fgetattr(int fd, const char* name, bufferptr& bp, int* chunks = NULL);
+  int _fgetattrs(int fd, map<string, pair<bufferptr, int> >& aset);
+  int _fgetattrs_chunks(int fd, map<string, int>& aset);
+  int _fsetattr(int fd, const string& name, bufferptr& bp, int chunks);
 
   void _start_sync();
 
