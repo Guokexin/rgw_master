@@ -985,6 +985,7 @@ public:
     ASSIGN_OPTION(blacklist_on_break_lock);
     ASSIGN_OPTION(blacklist_expire_seconds);
     ASSIGN_OPTION(request_timed_out_seconds);
+    ASSIGN_OPTION(enable_alloc_hint);
     if (throttle.enabled()) {
       throttle.attach_context(new ThrottleContext(this, false), new ThrottleContext(this, true));
     }
