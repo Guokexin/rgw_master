@@ -5,8 +5,11 @@
 #define __CEPH_OSD_CHAIN_XATTR_H
 
 #include "common/xattr.h"
+#include <map>
 
 #include <errno.h>
+#include <string>
+using namespace std;
 
 #define CHAIN_XATTR_MAX_NAME_LEN  128
 #define CHAIN_XATTR_MAX_BLOCK_LEN 2048
@@ -67,12 +70,13 @@ static inline int sys_fremovexattr(int fd, const char *name)
 
 // wrappers to chain large values across multiple xattrs
 
-int chain_getxattr(const char *fn, const char *name, void *val, size_t size);
-int chain_fgetxattr(int fd, const char *name, void *val, size_t size);
-int chain_setxattr(const char *fn, const char *name, const void *val, size_t size, bool onechunk=false);
-int chain_fsetxattr(int fd, const char *name, const void *val, size_t size, bool onechunk=false);
-int chain_listxattr(const char *fn, char *names, size_t len);
-int chain_flistxattr(int fd, char *names, size_t len);
+int chain_getxattr(const char *fn, const char *name, void *val, size_t size, int *orig_chunks = 0);
+int chain_fgetxattr(int fd, const char *name, void *val, size_t size, int* orig_chunks = 0);
+// orig_chunks < 0 means we do not know the number of chunks for this attr
+int chain_setxattr(const char *fn, const char *name, const void *val, size_t size, int orig_chunks = -1);
+int chain_fsetxattr(int fd, const char *name, const void *val, size_t size, int orig_chunks = -1);
+int chain_listxattr(const char *fn, char *names, size_t len, map<string, int> *chunks = NULL);
+int chain_flistxattr(int fd, char *names, size_t len, map<string, int> *chunks = NULL);
 int chain_removexattr(const char *fn, const char *name);
 int chain_fremovexattr(int fd, const char *name);
 
