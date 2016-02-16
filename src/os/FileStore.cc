@@ -3703,6 +3703,12 @@ void FileStore::sync_entry()
       sync_entry_timeo_lock.Unlock();
     } else {
       op_tp.unpause();
+      uint64_t cp = apply_manager.get_committing_seq();
+      int err = write_op_seq(op_fd, cp);
+      if (err < 0) {
+        derr << "Error during write_op_seq: " << cpp_strerror(err) << dendl;
+        assert(0 == "error during write_op_seq");
+      }
     }
     
     lock.Lock();
