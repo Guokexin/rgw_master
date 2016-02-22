@@ -614,9 +614,20 @@ bool coll_t::is_removal(uint64_t *seq, spg_t *pgid) const
 
 void coll_t::encode(bufferlist& bl) const
 {
+  // when changing this, remember to update encoded_size() too.
   __u8 struct_v = 3;
   ::encode(struct_v, bl);
   ::encode(str, bl);
+}
+
+size_t coll_t::encoded_size() const
+{
+  size_t r = sizeof(__u8);
+  // v3
+  r += sizeof(__u32);
+  r += str.size();
+
+  return r;
 }
 
 void coll_t::decode(bufferlist::iterator& bl)
