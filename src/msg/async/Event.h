@@ -39,6 +39,7 @@
 
 #include <pthread.h>
 
+#include "include/atomic.h"
 #include "include/Context.h"
 #include "include/unordered_map.h"
 #include "common/WorkQueue.h"
@@ -57,7 +58,7 @@ class EventCallback {
   virtual ~EventCallback() {}       // we want a virtual destructor!!!
 };
 
-typedef ceph::shared_ptr<EventCallback> EventCallbackRef;
+typedef EventCallback* EventCallbackRef;
 
 struct FiredFileEvent {
   int fd;
@@ -74,7 +75,7 @@ class EventDriver {
   virtual ~EventDriver() {}       // we want a virtual destructor!!!
   virtual int init(int nevent) = 0;
   virtual int add_event(int fd, int cur_mask, int mask) = 0;
-  virtual void del_event(int fd, int cur_mask, int del_mask) = 0;
+  virtual int del_event(int fd, int cur_mask, int del_mask) = 0;
   virtual int event_wait(vector<FiredFileEvent> &fired_events, struct timeval *tp) = 0;
   virtual int resize_events(int newsize) = 0;
 };
@@ -102,6 +103,7 @@ class EventCenter {
   int nevent;
   // Used only to external event
   Mutex external_lock, file_lock, time_lock;
+  atomic_t external_num_events;
   deque<EventCallbackRef> external_events;
   FileEvent *file_events;
   EventDriver *driver;
@@ -124,21 +126,24 @@ class EventCenter {
   }
 
  public:
-  EventCenter(CephContext *c):
+  atomic_t already_wakeup;
+
+  explicit EventCenter(CephContext *c):
     cct(c), nevent(0),
     external_lock("AsyncMessenger::external_lock"),
     file_lock("AsyncMessenger::file_lock"),
     time_lock("AsyncMessenger::time_lock"),
+    external_num_events(0),
     file_events(NULL),
-    driver(NULL), time_event_next_id(0),
-    notify_receive_fd(-1), notify_send_fd(-1), net(c), owner(0) {
+    driver(NULL), time_event_next_id(1),
+    notify_receive_fd(-1), notify_send_fd(-1), net(c), owner(0), already_wakeup(0) {
     last_time = time(NULL);
   }
   ~EventCenter();
   ostream& _event_prefix(std::ostream *_dout);
 
   int init(int nevent);
-  void set_owner(pthread_t p) { owner = p; }
+  void set_owner();
   pthread_t get_owner() { return owner; }
 
   // Used by internal thread

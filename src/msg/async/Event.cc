@@ -32,22 +32,37 @@
 #define dout_subsys ceph_subsys_ms
 
 #undef dout_prefix
+#define dout_prefix *_dout << "EventCallback "
+class C_handle_notify : public EventCallback {
+  EventCenter *center;
+  CephContext *cct;
+
+ public:
+  C_handle_notify(EventCenter *c, CephContext *cc): center(c), cct(cc) {}
+  void do_request(int fd_or_id) {
+    char c[256];
+    int r;
+    do {
+      center->already_wakeup.set(0);
+      r = read(fd_or_id, c, sizeof(c));
+      if (r < 0) {
+        ldout(cct, 1) << __func__ << " read notify pipe failed: " << cpp_strerror(errno) << dendl;
+        break;
+      }
+    } while (center->already_wakeup.read());
+  }
+};
+
+#undef dout_prefix
 #define dout_prefix _event_prefix(_dout)
+
 ostream& EventCenter::_event_prefix(std::ostream *_dout)
 {
   return *_dout << "Event(" << this << " owner=" << get_owner() << " nevent=" << nevent
                 << " time_id=" << time_event_next_id << ").";
 }
 
-class C_handle_notify : public EventCallback {
- public:
-  C_handle_notify() {}
-  void do_request(int fd_or_id) {
-    char c[100];
-    int r = read(fd_or_id, c, 100);
-    assert(r > 0);
-  }
-};
+static __thread pthread_t thread_id = 0;
 
 int EventCenter::init(int n)
 {
@@ -86,25 +101,48 @@ int EventCenter::init(int n)
   if (r < 0) {
     return -1;
   }
+  r = net.set_nonblock(notify_send_fd);
+  if (r < 0) {
+    return -1;
+  }
 
   file_events = static_cast<FileEvent *>(malloc(sizeof(FileEvent)*n));
   memset(file_events, 0, sizeof(FileEvent)*n);
 
   nevent = n;
-  create_file_event(notify_receive_fd, EVENT_READABLE, EventCallbackRef(new C_handle_notify()));
+  create_file_event(notify_receive_fd, EVENT_READABLE, EventCallbackRef(new C_handle_notify(this, cct)));
   return 0;
 }
 
 EventCenter::~EventCenter()
 {
-  delete driver;
+  {
+    Mutex::Locker l(external_lock);
+    while (!external_events.empty()) {
+      EventCallbackRef e = external_events.front();
+      if (e)
+        e->do_request(0);
+      external_events.pop_front();
+    }
+  }
+  assert(time_events.empty());
 
+  if (notify_receive_fd >= 0) {
+    delete_file_event(notify_receive_fd, EVENT_READABLE);
+    ::close(notify_receive_fd);
+  }
+  if (notify_send_fd >= 0)
+    ::close(notify_send_fd);
+    
+  delete driver;
   if (file_events)
     free(file_events);
-  if (notify_receive_fd > 0)
-    ::close(notify_receive_fd);
-  if (notify_send_fd > 0)
-    ::close(notify_send_fd);
+}
+
+
+void EventCenter::set_owner()
+{
+  thread_id = owner = pthread_self();
 }
 
 int EventCenter::create_file_event(int fd, int mask, EventCallbackRef ctxt)
@@ -138,8 +176,13 @@ int EventCenter::create_file_event(int fd, int mask, EventCallbackRef ctxt)
     return 0;
 
   r = driver->add_event(fd, event->mask, mask);
-  if (r < 0)
+  if (r < 0) {
+    // Actually we don't allow any failed error code, caller doesn't prepare to
+    // handle error status. So now we need to assert failure here. In practice,
+    // add_event shouldn't report error, otherwise it must be a innermost bug!
+    assert(0 == "BUG!");
     return r;
+  }
 
   event->mask |= mask;
   if (mask & EVENT_READABLE) {
@@ -155,10 +198,10 @@ int EventCenter::create_file_event(int fd, int mask, EventCallbackRef ctxt)
 
 void EventCenter::delete_file_event(int fd, int mask)
 {
-  assert(fd > 0);
+  assert(fd >= 0);
   Mutex::Locker l(file_lock);
-  if (fd > nevent) {
-    ldout(cct, 1) << __func__ << " delete event fd=" << fd << " exceed nevent=" << nevent
+  if (fd >= nevent) {
+    ldout(cct, 1) << __func__ << " delete event fd=" << fd << " is equal or greater than nevent=" << nevent
                   << "mask=" << mask << dendl;
     return ;
   }
@@ -168,13 +211,17 @@ void EventCenter::delete_file_event(int fd, int mask)
   if (!event->mask)
     return ;
 
-  driver->del_event(fd, event->mask, mask);
+  int r = driver->del_event(fd, event->mask, mask);
+  if (r < 0) {
+    // see create_file_event
+    assert(0 == "BUG!");
+  }
 
   if (mask & EVENT_READABLE && event->read_cb) {
-    event->read_cb.reset();
+    event->read_cb = NULL;
   }
   if (mask & EVENT_WRITABLE && event->write_cb) {
-    event->write_cb.reset();
+    event->write_cb = NULL;
   }
 
   event->mask = event->mask & (~mask);
@@ -220,7 +267,6 @@ void EventCenter::delete_time_event(uint64_t id)
   if (id >= time_event_next_id)
     return ;
 
-
   for (map<utime_t, list<TimeEvent> >::iterator it = time_events.begin();
        it != time_events.end(); ++it) {
     for (list<TimeEvent>::iterator j = it->second.begin();
@@ -237,13 +283,15 @@ void EventCenter::delete_time_event(uint64_t id)
 
 void EventCenter::wakeup()
 {
-  ldout(cct, 1) << __func__ << dendl;
-  char buf[1];
-  buf[0] = 'c';
-  // wake up "event_wait"
-  int n = write(notify_send_fd, buf, 1);
-  // FIXME ?
-  assert(n == 1);
+  if (already_wakeup.compare_and_swap(0, 1)) {
+    ldout(cct, 1) << __func__ << dendl;
+    char buf[1];
+    buf[0] = 'c';
+    // wake up "event_wait"
+    int n = write(notify_send_fd, buf, 1);
+    // FIXME ?
+    assert(n == 1);
+  }
 }
 
 int EventCenter::process_time_events()
@@ -305,15 +353,21 @@ int EventCenter::process_events(int timeout_microseconds)
   int numevents;
   bool trigger_time = false;
 
-  utime_t period, shortest, now = ceph_clock_now(cct);
-  now.copy_to_timeval(&tv);
-  if (timeout_microseconds > 0) {
-    tv.tv_sec += timeout_microseconds / 1000000;
-    tv.tv_usec += timeout_microseconds % 1000000;
-  }
-  shortest.set_from_timeval(&tv);
+  utime_t now = ceph_clock_now(cct);;
+  // If exists external events, don't block
+  if (external_num_events.read()) {
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    next_time = now;
+  } else {
+    utime_t period, shortest;
+    now.copy_to_timeval(&tv);
+    if (timeout_microseconds > 0) {
+      tv.tv_sec += timeout_microseconds / 1000000;
+      tv.tv_usec += timeout_microseconds % 1000000;
+    }
+    shortest.set_from_timeval(&tv);
 
-  {
     Mutex::Locker l(time_lock);
     map<utime_t, list<TimeEvent> >::iterator it = time_events.begin();
     if (it != time_events.end() && shortest >= it->first) {
@@ -331,50 +385,64 @@ int EventCenter::process_events(int timeout_microseconds)
       tv.tv_sec = timeout_microseconds / 1000000;
       tv.tv_usec = timeout_microseconds % 1000000;
     }
+    next_time = shortest;
   }
 
   ldout(cct, 10) << __func__ << " wait second " << tv.tv_sec << " usec " << tv.tv_usec << dendl;
   vector<FiredFileEvent> fired_events;
-  next_time = shortest;
   numevents = driver->event_wait(fired_events, &tv);
+  file_lock.Lock();
   for (int j = 0; j < numevents; j++) {
     int rfired = 0;
     FileEvent *event;
-    {
-      Mutex::Locker l(file_lock);
-      event = _get_file_event(fired_events[j].fd);
-    }
+    EventCallbackRef cb;
+    event = _get_file_event(fired_events[j].fd);
 
+    // FIXME: Actually we need to pick up some ways to reduce potential
+    // file_lock contention here.
     /* note the event->mask & mask & ... code: maybe an already processed
     * event removed an element that fired and we still didn't
     * processed, so we check if the event is still valid. */
     if (event->mask & fired_events[j].mask & EVENT_READABLE) {
       rfired = 1;
-      event->read_cb->do_request(fired_events[j].fd);
+      cb = event->read_cb;
+      file_lock.Unlock();
+      cb->do_request(fired_events[j].fd);
+      file_lock.Lock();
     }
 
     if (event->mask & fired_events[j].mask & EVENT_WRITABLE) {
-      if (!rfired || event->read_cb != event->write_cb)
-        event->write_cb->do_request(fired_events[j].fd);
+      if (!rfired || event->read_cb != event->write_cb) {
+        cb = event->write_cb;
+        file_lock.Unlock();
+        cb->do_request(fired_events[j].fd);
+        file_lock.Lock();
+      }
     }
 
     ldout(cct, 20) << __func__ << " event_wq process is " << fired_events[j].fd << " mask is " << fired_events[j].mask << dendl;
   }
+  file_lock.Unlock();
 
   if (trigger_time)
     numevents += process_time_events();
 
-  {
+  if (external_num_events.read()) {
     external_lock.Lock();
-    while (!external_events.empty()) {
-      EventCallbackRef e = external_events.front();
-      external_events.pop_front();
+    if (external_events.empty()) {
       external_lock.Unlock();
-      if (e)
-        e->do_request(0);
-      external_lock.Lock();
+    } else {
+      deque<EventCallbackRef> cur_process;
+      cur_process.swap(external_events);
+      external_num_events.set(0);
+      external_lock.Unlock();
+      while (!cur_process.empty()) {
+        EventCallbackRef e = cur_process.front();
+        if (e)
+          e->do_request(0);
+        cur_process.pop_front();
+      }
     }
-    external_lock.Unlock();
   }
   return numevents;
 }
@@ -383,6 +451,10 @@ void EventCenter::dispatch_event_external(EventCallbackRef e)
 {
   external_lock.Lock();
   external_events.push_back(e);
+  uint64_t num = external_num_events.inc();
   external_lock.Unlock();
-  wakeup();
+  if (thread_id != owner)
+    wakeup();
+
+  ldout(cct, 10) << __func__ << " " << e << " pending " << num << dendl;
 }
