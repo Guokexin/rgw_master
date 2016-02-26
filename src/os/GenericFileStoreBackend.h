@@ -16,6 +16,7 @@
 #define CEPH_GENERICFILESTOREBACKEDN_H
 
 #include "FileStore.h"
+#include "XStore.h"
 
 class SloppyCRCMap;
 
@@ -25,7 +26,7 @@ private:
   bool m_filestore_fiemap;
   bool m_filestore_fsync_flushes_journal_data;
 public:
-  GenericFileStoreBackend(FileStore *fs);
+  GenericFileStoreBackend(Store *fs);
   virtual ~GenericFileStoreBackend() {}
 
   virtual const char *get_name() {

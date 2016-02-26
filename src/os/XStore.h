@@ -13,8 +13,8 @@
  */
 
 
-#ifndef CEPH_FILESTORE_H
-#define CEPH_FILESTORE_H
+#ifndef CEPH_XSTORE_H
+#define CEPH_XSTORE_H
 
 #include "include/types.h"
 
@@ -29,7 +29,8 @@ using namespace std;
 #include "include/assert.h"
 
 #include "ObjectStore.h"
-#include "JournalingObjectStore.h"
+#include "FileStore.h"
+#include "XJournalingObjectStore.h"
 
 #include "common/Timer.h"
 #include "common/WorkQueue.h"
@@ -51,60 +52,11 @@ using namespace std;
 # define FALLOC_FL_PUNCH_HOLE 0x2
 #endif
 
-#if defined(__linux__)
-# ifndef BTRFS_SUPER_MAGIC
-static const __SWORD_TYPE BTRFS_SUPER_MAGIC(0x9123683E);
-# endif
-# ifndef XFS_SUPER_MAGIC
-static const __SWORD_TYPE XFS_SUPER_MAGIC(0x58465342);
-# endif
-#ifndef ZFS_SUPER_MAGIC
-static const __SWORD_TYPE ZFS_SUPER_MAGIC(0x2fc12fc1);
-#endif
-#endif
-
-class FileStoreBackend;
-
 #define CEPH_FS_FEATURE_INCOMPAT_SHARDS CompatSet::Feature(1, "sharded objects")
 
-class FSSuperblock {
-public:
-  CompatSet compat_features;
-  string omap_backend;
-
-  FSSuperblock() { }
-
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::iterator &bl);
-  void dump(Formatter *f) const;
-  static void generate_test_instances(list<FSSuperblock*>& o);
-};
-WRITE_CLASS_ENCODER(FSSuperblock)
-
-inline ostream& operator<<(ostream& out, const FSSuperblock& sb)
-{
-  return out << "sb(" << sb.compat_features << "): "
-             << sb.omap_backend;
-}
-
-class Store {
-public:
-  virtual int _do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) = 0;
-  virtual int _do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) = 0;
-  Store(int op_fd, int basedir_fd, int current_fd, size_t blk_size, const string &basedir,
-    const int crc_bs): op_fd(op_fd), basedir_fd(basedir_fd), current_fd(current_fd),
-    blk_size(blk_size), basedir(basedir), m_filestore_sloppy_crc_block_size(crc_bs) {}
-  virtual ~Store() {}
-
-  int op_fd, basedir_fd, current_fd;
-  size_t blk_size;
-  string basedir, current_fn;
-  int m_filestore_sloppy_crc_block_size;
-};
-
-class FileStore : public JournalingObjectStore,
-                  public md_config_obs_t,
-                  public Store
+class XStore : public XJournalingObjectStore,
+               public md_config_obs_t,
+               public Store
 {
   static const uint32_t target_version = 4;
 public:
@@ -163,7 +115,7 @@ private:
       map<ghobject_t, map<string, bufferlist> > pgmeta_keys;
       PGMetaShard(string name): pgmeta_shard_lock(name.c_str()), bytes(0) {}
     };
-    FileStore *store;
+    XStore *store;
     const int pgmeta_shards;
     vector<PGMetaShard*> shards;
     uint64_t shard_bytes_limit;
@@ -262,11 +214,11 @@ private:
       return false;
     }
 
-    PGMetaCache(FileStore *s, int num, uint64_t limit):
+    PGMetaCache(XStore *s, int num, uint64_t limit):
       store(s), pgmeta_shards(num), shard_bytes_limit(limit) {
       char lock_name[32] = {0};
       for (int i = 0; i < num; ++i) {
-        snprintf(lock_name, sizeof(lock_name), "%s.%d", "FileStore:PGMetaCache:", i);
+        snprintf(lock_name, sizeof(lock_name), "%s.%d", "XStore:PGMetaCache:", i);
         PGMetaShard *shard = new PGMetaShard(lock_name);
         shards.push_back(shard);
       }
@@ -294,8 +246,8 @@ private:
   bool stop;
   void sync_entry();
   struct SyncThread : public Thread {
-    FileStore *fs;
-    SyncThread(FileStore *f) : fs(f) {}
+    XStore *fs;
+    SyncThread(XStore *f) : fs(f) {}
     void *entry() {
       fs->sync_entry();
       return 0;
@@ -436,9 +388,9 @@ private:
     }
 
     OpSequencer(int i)
-      : qlock("FileStore::OpSequencer::qlock", false, false),
+      : qlock("XStore::OpSequencer::qlock", false, false),
 	parent(0),
-	apply_lock("FileStore::OpSequencer::apply_lock", false, false), id(i) {}
+	apply_lock("XStore::OpSequencer::apply_lock", false, false), id(i) {}
     ~OpSequencer() {
       assert(q.empty());
     }
@@ -467,9 +419,9 @@ private:
 
   ThreadPool op_tp;
   struct OpWQ : public ThreadPool::WorkQueue<OpSequencer> {
-    FileStore *store;
-    OpWQ(FileStore *fs, time_t timeout, time_t suicide_timeout, ThreadPool *tp)
-      : ThreadPool::WorkQueue<OpSequencer>("FileStore::OpWQ", timeout, suicide_timeout, tp), store(fs) {}
+    XStore *store;
+    OpWQ(XStore *fs, time_t timeout, time_t suicide_timeout, ThreadPool *tp)
+      : ThreadPool::WorkQueue<OpSequencer>("XStore::OpWQ", timeout, suicide_timeout, tp), store(fs) {}
 
     bool _enqueue(OpSequencer *osr) {
       store->op_queue.push_back(osr);
@@ -532,10 +484,10 @@ public:
 		 bool force_clear_omap, int osr);
 
 public:
-  FileStore(const std::string &base, const std::string &jdev,
+  XStore(const std::string &base, const std::string &jdev,
     osflagbits_t flags = 0,
-    const char *internal_name = "filestore", bool update_to=false);
-  ~FileStore();
+    const char *internal_name = "XStore", bool update_to=false);
+  ~XStore();
 
   int _detect_fs();
   int _sanity_check_fs();
@@ -567,7 +519,7 @@ public:
    *
    * Before sharded ghobject_t can be specified this function must be called
    *
-   * Once this function is called the FileStore is not mountable by prior releases
+   * Once this function is called the XStore is not mountable by prior releases
    */
   void set_allow_sharded_objects();
 
@@ -857,82 +809,16 @@ private:
   /**
    * read_superblock()
    *
-   * Fill in FileStore::superblock by reading persistent storage
+   * Fill in XStore::superblock by reading persistent storage
    *
    * return value: 0 on success, otherwise negative errno
    */
   int read_superblock();
 
   friend class FileStoreBackend;
-  friend class TestFileStore;
+  friend class TestXStore;
 };
 
-ostream& operator<<(ostream& out, const FileStore::OpSequencer& s);
-
-struct fiemap;
-
-class FileStoreBackend {
-private:
-  Store *store;
-protected:
-  int get_basedir_fd() {
-    return store->basedir_fd;
-  }
-  int get_current_fd() {
-    return store->current_fd;
-  }
-  int get_op_fd() {
-    return store->op_fd;
-  }
-  size_t get_blksize() {
-    return store->blk_size;
-  }
-  const string& get_basedir_path() {
-    return store->basedir;
-  }
-  const string& get_current_path() {
-    return store->current_fn;
-  }
-  int _copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) {
-    if (has_fiemap()) {
-      return store->_do_sparse_copy_range(from, to, srcoff, len, dstoff);
-    } else {
-      return store->_do_copy_range(from, to, srcoff, len, dstoff);
-    }
-  }
-  int get_crc_block_size() {
-    return store->m_filestore_sloppy_crc_block_size;
-  }
-
-public:
-  FileStoreBackend(Store *fs) : store(fs) {}
-  virtual ~FileStoreBackend() {}
-
-  static FileStoreBackend *create(long f_type, Store *fs);
-
-  virtual const char *get_name() = 0;
-  virtual int detect_features() = 0;
-  virtual int create_current() = 0;
-  virtual bool can_checkpoint() = 0;
-  virtual int list_checkpoints(list<string>& ls) = 0;
-  virtual int create_checkpoint(const string& name, uint64_t *cid) = 0;
-  virtual int sync_checkpoint(uint64_t id) = 0;
-  virtual int rollback_to(const string& name) = 0;
-  virtual int destroy_checkpoint(const string& name) = 0;
-  virtual int syncfs() = 0;
-  virtual bool has_fiemap() = 0;
-  virtual int do_fiemap(int fd, off_t start, size_t len, struct fiemap **pfiemap) = 0;
-  virtual int clone_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) = 0;
-  virtual int set_alloc_hint(int fd, uint64_t hint) = 0;
-
-  // hooks for (sloppy) crc tracking
-  virtual int _crc_update_write(int fd, loff_t off, size_t len, const bufferlist& bl) = 0;
-  virtual int _crc_update_truncate(int fd, loff_t off) = 0;
-  virtual int _crc_update_zero(int fd, loff_t off, size_t len) = 0;
-  virtual int _crc_update_clone_range(int srcfd, int destfd,
-				      loff_t srcoff, size_t len, loff_t dstoff) = 0;
-  virtual int _crc_verify_read(int fd, loff_t off, size_t len, const bufferlist& bl,
-			       ostream *out) = 0;
-};
+ostream& operator<<(ostream& out, const XStore::OpSequencer& s);
 
 #endif

@@ -27,11 +27,11 @@
 #include "include/assert.h"
 #include "include/compat.h"
 
-#define dout_subsys ceph_subsys_filestore
+#define dout_subsys ceph_subsys_xstore
 #undef dout_prefix
 #define dout_prefix *_dout << "xfsfilestorebackend(" << get_basedir_path() << ") "
 
-XfsFileStoreBackend::XfsFileStoreBackend(FileStore *fs):
+XfsFileStoreBackend::XfsFileStoreBackend(Store *fs):
   GenericFileStoreBackend(fs), m_has_extsize(false) { }
 
 /*

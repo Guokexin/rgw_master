@@ -54,7 +54,7 @@
 #define ALIGNED(x, by) (!((x) % (by)))
 #define ALIGN_UP(x, by) (ALIGNED((x), (by)) ? (x) : (ALIGN_DOWN((x), (by)) + (by)))
 
-GenericFileStoreBackend::GenericFileStoreBackend(FileStore *fs):
+GenericFileStoreBackend::GenericFileStoreBackend(Store *fs):
   FileStoreBackend(fs),
   ioctl_fiemap(false),
   m_filestore_fiemap(g_conf->filestore_fiemap),

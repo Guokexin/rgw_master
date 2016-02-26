@@ -10,12 +10,15 @@ libos_la_SOURCES = \
 	os/DBObjectMap.cc \
 	os/GenericObjectMap.cc \
 	os/FileJournal.cc \
+	os/XJournal.cc \
 	os/FileStore.cc \
+	os/XStore.cc \
 	os/FlatIndex.cc \
 	os/GenericFileStoreBackend.cc \
 	os/HashIndex.cc \
 	os/IndexManager.cc \
 	os/JournalingObjectStore.cc \
+	os/XJournalingObjectStore.cc \
 	os/LevelDBStore.cc \
 	os/LFNIndex.cc \
 	os/MemStore.cc \
@@ -54,7 +57,9 @@ noinst_HEADERS += \
 	os/DBObjectMap.h \
 	os/GenericObjectMap.h \
 	os/FileJournal.h \
+	os/XJournal.h \
 	os/FileStore.h \
+	os/XStore.h \
 	os/FlatIndex.h \
 	os/FDCache.h \
 	os/GenericFileStoreBackend.h \
@@ -62,6 +67,7 @@ noinst_HEADERS += \
 	os/IndexManager.h \
 	os/Journal.h \
 	os/JournalingObjectStore.h \
+	os/XJournalingObjectStore.h \
 	os/KeyValueDB.h \
 	os/LevelDBStore.h \
 	os/LFNIndex.h \

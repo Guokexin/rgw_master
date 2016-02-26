@@ -17,6 +17,7 @@
 #include "ObjectStore.h"
 #include "common/Formatter.h"
 #include "FileStore.h"
+#include "XStore.h"
 #include "MemStore.h"
 #include "KeyValueStore.h"
 #include "common/safe_io.h"
@@ -36,6 +37,9 @@ ObjectStore *ObjectStore::create(CephContext *cct,
   if (type == "keyvaluestore" &&
       cct->check_experimental_feature_enabled("keyvaluestore")) {
     return new KeyValueStore(data);
+  }
+  if (type == "xstore") {
+    return new XStore(data, journal, flags);
   }
   return NULL;
 }

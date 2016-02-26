@@ -51,7 +51,7 @@
 #define ALIGNED(x, by) (!((x) % (by)))
 #define ALIGN_UP(x, by) (ALIGNED((x), (by)) ? (x) : (ALIGN_DOWN((x), (by)) + (by)))
 
-BtrfsFileStoreBackend::BtrfsFileStoreBackend(FileStore *fs):
+BtrfsFileStoreBackend::BtrfsFileStoreBackend(Store *fs):
     GenericFileStoreBackend(fs), has_clone_range(false),
     has_snap_create(false), has_snap_destroy(false),
     has_snap_create_v2(false), has_wait_sync(false), stable_commits(false),
