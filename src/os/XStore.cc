@@ -534,6 +534,8 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   sync_entry_timeo_lock("sync_entry_timeo_lock"),
   timer(g_ceph_context, sync_entry_timeo_lock),
   stop(false), sync_thread(this),
+  jwa_lock("XStore::jwa_lock"),
+  jwa_stop(false), jwa_thread(this),
   fdcache(g_ceph_context),
   default_osr("default"),
   next_osr_id(0),
@@ -548,9 +550,6 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   logger(NULL),
   read_error_lock("XStore::read_error_lock"),
   m_filestore_commit_timeout(g_conf->filestore_commit_timeout),
-  m_filestore_journal_parallel(g_conf->filestore_journal_parallel ),
-  m_filestore_journal_trailing(g_conf->filestore_journal_trailing),
-  m_filestore_journal_writeahead(g_conf->filestore_journal_writeahead),
   m_filestore_fiemap_threshold(g_conf->filestore_fiemap_threshold),
   m_filestore_max_sync_interval(g_conf->filestore_max_sync_interval),
   m_filestore_min_sync_interval(g_conf->filestore_min_sync_interval),
@@ -1063,49 +1062,6 @@ int XStore::_detect_fs()
   return 0;
 }
 
-int XStore::_sanity_check_fs()
-{
-  // sanity check(s)
-
-  if (((int)m_filestore_journal_writeahead +
-      (int)m_filestore_journal_parallel +
-      (int)m_filestore_journal_trailing) > 1) {
-    dout(0) << "mount ERROR: more than one of filestore journal {writeahead,parallel,trailing} enabled" << dendl;
-    cerr << TEXT_RED 
-	 << " ** WARNING: more than one of 'filestore journal {writeahead,parallel,trailing}'\n"
-	 << "             is enabled in ceph.conf.  You must choose a single journal mode."
-	 << TEXT_NORMAL << std::endl;
-    return -EINVAL;
-  }
-
-  if (!backend->can_checkpoint()) {
-    if (!journal || !m_filestore_journal_writeahead) {
-      dout(0) << "mount WARNING: no btrfs, and no journal in writeahead mode; data may be lost" << dendl;
-      cerr << TEXT_RED 
-	   << " ** WARNING: no btrfs AND (no journal OR journal not in writeahead mode)\n"
-	   << "             For non-btrfs volumes, a writeahead journal is required to\n"
-	   << "             maintain on-disk consistency in the event of a crash.  Your conf\n"
-	   << "             should include something like:\n"
-	   << "        osd journal = /path/to/journal_device_or_file\n"
-	   << "        filestore journal writeahead = true\n"
-	   << TEXT_NORMAL;
-    }
-  }
-
-  if (!journal) {
-    dout(0) << "mount WARNING: no journal" << dendl;
-    cerr << TEXT_YELLOW
-	 << " ** WARNING: No osd journal is configured: write latency may be high.\n"
-	 << "             If you will not be using an osd journal, write latency may be\n"
-	 << "             relatively high.  It can be reduced somewhat by lowering\n"
-	 << "             filestore_max_sync_interval, but lower values mean lower write\n"
-	 << "             throughput, especially with spinning disks.\n"
-	 << TEXT_NORMAL;
-  }
-
-  return 0;
-}
-
 int XStore::write_superblock()
 {
   bufferlist bl;
@@ -1512,34 +1468,9 @@ int XStore::mount()
 
   // select journal mode?
   if (journal) {
-    if (!m_filestore_journal_writeahead &&
-	!m_filestore_journal_parallel &&
-	!m_filestore_journal_trailing) {
-      if (!backend->can_checkpoint()) {
-	m_filestore_journal_writeahead = true;
-	dout(0) << "mount: enabling WRITEAHEAD journal mode: checkpoint is not enabled" << dendl;
-      } else {
-	m_filestore_journal_parallel = true;
-	dout(0) << "mount: enabling PARALLEL journal mode: fs, checkpoint is enabled" << dendl;
-      }
-    } else {
-      if (m_filestore_journal_writeahead)
-	dout(0) << "mount: WRITEAHEAD journal mode explicitly enabled in conf" << dendl;
-      if (m_filestore_journal_parallel)
-	dout(0) << "mount: PARALLEL journal mode explicitly enabled in conf" << dendl;
-      if (m_filestore_journal_trailing)
-	dout(0) << "mount: TRAILING journal mode explicitly enabled in conf" << dendl;
-    }
-    if (m_filestore_journal_writeahead)
-      journal->set_wait_on_full(true);
+    journal->set_wait_on_full(true);
   } else {
-    dout(0) << "mount: no journal" << dendl;
-  }
-
-  ret = _sanity_check_fs();
-  if (ret) {
-    derr << "XStore::mount: _sanity_check_fs failed with error "
-	 << ret << dendl;
+    derr << "mount: no journal" << dendl;
     goto close_current_fd;
   }
 
@@ -1572,6 +1503,7 @@ int XStore::mount()
     wbthrottles[i]->start();
   }
   sync_thread.create();
+  jwa_thread.create();
 
   if (!(generic_flags & SKIP_JOURNAL_REPLAY)) {
     ret = journal_replay(initial_op_seq);
@@ -1585,9 +1517,11 @@ int XStore::mount()
       // stop sync thread
       lock.Lock();
       stop = true;
+      jwa_stop = true;
       sync_cond.Signal();
       lock.Unlock();
       sync_thread.join();
+      jwa_thread.join();
 
       for (int i = 0; i < wbthrottle_num; ++i) {
         wbthrottles[i]->stop();
@@ -1653,9 +1587,11 @@ int XStore::umount()
 
   lock.Lock();
   stop = true;
+  jwa_stop = true;
   sync_cond.Signal();
   lock.Unlock();
   sync_thread.join();
+  jwa_thread.join();
   for (int i = 0; i < wbthrottle_num; ++i) {
     wbthrottles[i]->stop();
   }
@@ -1711,9 +1647,11 @@ int XStore::umount()
 /// -----------------------------
 
 XStore::Op *XStore::build_op(list<Transaction*>& tls,
+				   Context *ondisk,
 				   Context *onreadable,
 				   Context *onreadable_sync,
-				   TrackedOpRef osd_op)
+				   TrackedOpRef osd_op,
+				   OpSequencer *osr)
 {
   uint64_t bytes = 0, ops = 0;
   for (list<Transaction*>::iterator p = tls.begin();
@@ -1726,11 +1664,13 @@ XStore::Op *XStore::build_op(list<Transaction*>& tls,
   Op *o = new Op;
   o->start = ceph_clock_now(g_ceph_context);
   o->tls.swap(tls);
+  o->ondisk = ondisk;
   o->onreadable = onreadable;
   o->onreadable_sync = onreadable_sync;
   o->ops = ops;
   o->bytes = bytes;
   o->osd_op = osd_op;
+  o->osr = osr;
   return o;
 }
 
@@ -1822,18 +1762,47 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 
   osr->apply_lock.Lock();
   Op *o = osr->peek_queue();
-  apply_manager.op_apply_start(o->op);
+  assert(o->state == Op::STATE_ACK || o->state == Op::STATE_INIT);
+  if (o->state == Op::STATE_INIT) {
+    apply_manager.op_apply_start(o->op);
+  }
   dout(5) << "_do_op " << o << " seq " << o->op << " " << *osr << "/" << osr->parent << " start" << dendl;
-  int r = _do_transactions(o->tls, o->op, &handle);
-  apply_manager.op_apply_finish(o->op);
+  int r = 0;
+  if (o->state == Op::STATE_ACK || !(o->wal)) {
+    r = _do_transactions(o->tls, o->op, o, &handle);
+  } else {
+    dout(10) << "_do_op skip " << o << " seq " << o->op << " r = " << r
+	     << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
+  }
+  if (o->state == Op::STATE_ACK) {
+    apply_manager.op_apply_finish(o->op);
+  }
   dout(10) << "_do_op " << o << " seq " << o->op << " r = " << r
 	   << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
 }
 
 void XStore::_finish_op(OpSequencer *osr)
 {
+  Op *o = osr->peek_queue();
+  if (o->state != Op::STATE_ACK) {
+    Mutex::Locker l(jwa_lock);
+    if (o->state == Op::STATE_INIT) {
+      o->state = Op::STATE_WRITE;
+    } else if (o->state == Op::STATE_JOURNAL) {
+      o->state = Op::STATE_COMMIT;
+      jwa_queue.push_back(o);
+      jwa_cond.SignalOne();
+    }
+    osr->dequeue();
+    osr->apply_lock.Unlock();  // locked in _do_op
+    return;
+  }
+
+  o->state = Op::STATE_DONE;
+
   list<Context*> to_queue;
-  Op *o = osr->dequeue(&to_queue);
+  o = osr->dequeue(&to_queue);
+  assert(osr->dequeue_inq() == o);
   
   dout(10) << "_finish_op " << o << " seq " << o->op << " " << *osr << "/" << osr->parent << dendl;
   osr->apply_lock.Unlock();  // locked in _do_op
@@ -1858,18 +1827,352 @@ void XStore::_finish_op(OpSequencer *osr)
 }
 
 
-struct C_JournaledAhead : public Context {
+struct C_JournaledWritten : public Context {
   XStore *fs;
-  XStore::OpSequencer *osr;
   XStore::Op *o;
-  Context *ondisk;
 
-  C_JournaledAhead(XStore *f, XStore::OpSequencer *os, XStore::Op *o, Context *ondisk):
-    fs(f), osr(os), o(o), ondisk(ondisk) { }
+  C_JournaledWritten(XStore *f, XStore::Op *o): fs(f), o(o) { }
   void finish(int r) {
-    fs->_journaled_ahead(osr, o, ondisk);
+    fs->_journaled_written(o);
   }
 };
+
+struct C_JournaledAckWritten : public Context {
+  XStore *fs;
+  list<XStore::Op *> acks;
+
+  C_JournaledAckWritten(XStore *f, list<XStore::Op *> acks): fs(f), acks(acks) {}
+  void finish(int r) {
+    fs->_journaled_ack_written(acks);
+  }
+};
+
+void XStore::_jwa_entry()
+{
+  dout(10) << __func__ << " start" << dendl;
+  list<Transaction*> tls;
+  jwa_lock.Lock();
+  while (true) {
+    if (jwa_queue.empty()) {
+      if (jwa_stop)
+        break;
+      dout(20) << __func__ << " sleep" << dendl;
+      jwa_cond.Wait(jwa_lock); 
+      dout(20) << __func__ << " wake" << dendl;
+    } else {
+      list<Op*> jwa_q;
+      jwa_q.swap(jwa_queue);
+      jwa_lock.Unlock();
+
+      bufferlist bl;
+      ::encode(jwa_q, bl);
+      Op *o = build_op(tls, new C_JournaledAckWritten(this, jwa_q),
+                       NULL, NULL, TrackedOpRef(), NULL);
+      bufferlist tbl;
+      int orig_len = journal->prepare_ack_entry(bl, tbl);
+      uint64_t op_num = submit_manager.op_submit_start();
+      o->op = op_num;
+      o->osr = NULL;
+      
+      // FIXME osr->queue_journal(o->op);
+      if (journal && journal->is_writeable()) {
+        journal->submit_entry(op_num, tbl, orig_len, NULL, TrackedOpRef());
+        submit_manager.op_submit_finish(op_num);
+      } else {
+        assert(0 == "Unexpected IO PATH");
+      }
+      jwa_lock.Lock();
+    }
+  }
+  jwa_lock.Unlock();
+  dout(10) << __func__ << " end" << dendl;
+}
+
+int XStore::get_replay_txns(list<Transaction*>& tls,
+  list<Transaction*>* jtls, uint64_t seq, bool txns_done)
+{
+  bool should_wal = _should_wal(tls);
+  if (should_wal && txns_done) {
+    return 0;
+  }
+
+  Transaction* jtran = new Transaction();
+  for (list<Transaction*>::iterator p = tls.begin();
+      p != tls.end(); ++p) {
+    Transaction::iterator i = (*p)->begin();
+    while (i.have_op()) {
+      Transaction::Op *op = i.decode_op();
+
+      switch (op->op) {
+      case Transaction::OP_NOP:
+        break;
+      case Transaction::OP_TOUCH:
+        break;
+        
+      case Transaction::OP_WRITE:
+        {
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          uint64_t off = op->off;
+          uint64_t len = op->len;
+          if (!txns_done) {
+            bufferlist bl;
+            i.decode_bl(bl);
+            jtran->touch(cid, oid);
+          }
+          dout(15) << "write " << cid << "/" << oid << " " << off << "~" << len << dendl;
+        }
+        break;
+        
+      case Transaction::OP_ZERO:
+        break;
+        
+      case Transaction::OP_TRIMCACHE:
+        break;
+        
+      case Transaction::OP_TRUNCATE:
+        break;
+        
+      case Transaction::OP_REMOVE:
+        break;
+        
+      case Transaction::OP_SETATTR:
+        {
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          string name = i.decode_string();
+          bufferlist bl;
+          i.decode_bl(bl);
+          if (!txns_done && name == OI_ATTR) {
+            // set unstable flag
+            object_info_t oi(bl);
+            oi.set_unstable();
+            bufferlist bv;
+            ::encode(oi, bv);
+            dout(20) << "oid " << oid << " version " << oi.version << " seq " << seq << dendl;
+            jtran->setattr(cid, oid, name, bv);
+          } else {
+            jtran->setattr(cid, oid, name, bl);
+          }
+        }
+        break;
+        
+      case Transaction::OP_SETATTRS:
+        {
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          map<string, bufferptr> aset;
+          i.decode_attrset(aset);
+          if (!txns_done && aset.count(OI_ATTR)) {
+            // set unstable flag
+            bufferlist bv;
+            bv.push_back(aset.find(OI_ATTR)->second);
+            object_info_t oi(bv);
+            oi.set_unstable();
+            bv.clear();
+            ::encode(oi, bv);
+            dout(20) << "oid " << oid << " version " << oi.version << " seq " << seq << dendl;
+            bv.c_str();
+            aset.insert(make_pair(string(OI_ATTR), bv.buffers().front()));
+          }
+          jtran->setattrs(cid, oid, aset);
+        }
+        break;
+
+      case Transaction::OP_RMATTR:
+        {
+          i.decode_string();
+        }
+        break;
+
+      case Transaction::OP_RMATTRS:
+        break;
+        
+      case Transaction::OP_CLONE:
+        break;
+
+      case Transaction::OP_CLONERANGE:
+        break;
+
+      case Transaction::OP_CLONERANGE2:
+        break;
+
+      case Transaction::OP_MKCOLL:
+        break;
+
+      case Transaction::OP_COLL_HINT:
+        {
+          bufferlist hint;
+          i.decode_bl(hint);
+        }
+        break;
+
+      case Transaction::OP_RMCOLL:
+        break;
+
+      case Transaction::OP_COLL_ADD:
+        {
+          coll_t ocid = i.get_cid(op->cid);
+          coll_t ncid = i.get_cid(op->dest_cid);
+          ghobject_t oid = i.get_oid(op->oid);
+
+          // always followed by OP_COLL_REMOVE
+          Transaction::Op *op2 = i.decode_op();
+          coll_t ocid2 = i.get_cid(op2->cid);
+          ghobject_t oid2 = i.get_oid(op2->oid);
+          assert(op2->op == Transaction::OP_COLL_REMOVE);
+          assert(ocid2 == ocid);
+          assert(oid2 == oid);
+
+        }
+        break;
+
+      case Transaction::OP_COLL_MOVE:
+        break;
+
+      case Transaction::OP_COLL_MOVE_RENAME:
+        break;
+
+      case Transaction::OP_COLL_SETATTR:
+        {
+          i.decode_string();
+          bufferlist bl;
+          i.decode_bl(bl);
+        }
+        break;
+
+      case Transaction::OP_COLL_RMATTR:
+        {
+          i.decode_string();
+        }
+        break;
+
+      case Transaction::OP_STARTSYNC:
+        break;
+
+      case Transaction::OP_COLL_RENAME:
+        break;
+
+      case Transaction::OP_OMAP_CLEAR:
+        break;
+      case Transaction::OP_OMAP_SETKEYS:
+        {
+          map<string, bufferlist> aset;
+          i.decode_attrset(aset);
+        }
+        break;
+      case Transaction::OP_PGMETA_WRITE:
+        {
+          if (txns_done) {
+            const coll_t& cid = i.get_cid(op->cid);
+            const ghobject_t& oid = i.get_oid(op->oid);
+            map<string, bufferlist> aset;
+            i.decode_attrset(aset);
+            jtran->pgmeta_setkeys(cid, oid, aset);
+          }
+        }
+        break;
+      case Transaction::OP_OMAP_RMKEYS:
+        {
+          set<string> keys;
+          i.decode_keyset(keys);
+        }
+        break;
+      case Transaction::OP_OMAP_RMKEYRANGE:
+        {
+          i.decode_string();
+          i.decode_string();
+        }
+        break;
+      case Transaction::OP_OMAP_SETHEADER:
+        {
+          bufferlist bl;
+          i.decode_bl(bl);
+        }
+        break;
+      case Transaction::OP_SPLIT_COLLECTION:
+        break;
+      case Transaction::OP_SPLIT_COLLECTION2:
+        break;
+
+      case Transaction::OP_SETALLOCHINT:
+        break;
+
+      default:
+        derr << "bad op " << op->op << dendl;
+        assert(0);
+      }
+    }
+    if (should_wal) {
+      dout(20) << " transaction dump:\n";
+      JSONFormatter f(true);
+      f.open_object_section("transaction");
+      (*p)->dump(&f);
+      f.close_section();
+      f.flush(*_dout);
+      *_dout << dendl;
+      dout(25) << __func__ << " enable wal" << dendl;
+    }
+  }
+  assert(jtls->empty());
+  if (!should_wal)
+    jtls->push_back(jtran);
+  return 0;
+}
+
+
+bool XStore::_should_wal(list<Transaction*> &tls)
+{
+  bufferlist ops_bl;
+  uint32_t ops = 0;
+  bool wal = false;
+  for (list<ObjectStore::Transaction*>::const_iterator p = tls.begin();
+       p != tls.end();
+       ++p) {
+    if ((*p)->get_use_tbl()) {
+      wal = true;
+      break;
+    }
+    ops_bl.append((*p)->op_bl);
+    ops += (*p)->data.ops;
+  }
+  if (!wal) {
+    uint32_t not_wal_ops[] = {Transaction::OP_WRITE, Transaction::OP_SETATTRS,
+      Transaction::OP_OMAP_SETKEYS};
+    char* op_buffer_p = ops_bl.get_contiguous(0, ops * sizeof(Transaction::Op));
+    char* op_p = op_buffer_p;
+ 
+    for (uint32_t i = 0, j = 0; i < ops; i++) {
+      Transaction::Op* op = reinterpret_cast<Transaction::Op*>(op_p);
+      op_p += sizeof(Transaction::Op);
+      if (i == 2 && op->op == Transaction::OP_OMAP_RMKEYS)
+        continue;
+      if (op->op == Transaction::OP_WRITE_AHEAD ||
+          op->op != not_wal_ops[j] ||
+          i >= sizeof(not_wal_ops) / sizeof(uint32_t)) {
+        wal = true;
+        break;
+      }
+      j++;
+    }
+  }
+  
+  if (wal) {
+    for (list<ObjectStore::Transaction*>::const_iterator p = tls.begin();
+         p != tls.end();
+         ++p) {
+      dout(20) << " transaction dump:\n";
+      JSONFormatter f(true);
+      f.open_object_section("transaction");
+      (*p)->dump(&f);
+      f.close_section();
+      f.flush(*_dout);
+      *_dout << dendl;
+      dout(20) << __func__ << " do wal" << dendl;
+    }
+  }
+  return wal;
+}
 
 int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
 				  TrackedOpRef osd_op,
@@ -1885,7 +2188,6 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
     delete ondisk;
     delete onreadable;
     delete onreadable_sync;
-    reset_coll_object_tbl(tls);
     return 0;
   }
 
@@ -1908,127 +2210,92 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
     (*i)->set_osr(osr);
   }
 
-  if (journal && journal->is_writeable() && !m_filestore_journal_trailing) {
-    Op *o = build_op(tls, onreadable, onreadable_sync, osd_op);
+  if (journal && journal->is_writeable()) {
+    Op *o = build_op(tls, ondisk, onreadable, onreadable_sync, osd_op, osr);
+    o->wal = _should_wal(o->tls);
+    o->osr = osr;
     op_queue_reserve_throttle(o, handle);
     journal->throttle();
     //prepare and encode transactions data out of lock
     bufferlist tbl;
-    int orig_len = -1;
-    if (journal && journal->is_writeable()) {
-      orig_len = journal->_op_journal_transactions_prepare(o->tls, tbl);
-    }
+    int orig_len = journal->_op_journal_transactions_prepare(o->tls, tbl);
     uint64_t op_num = submit_manager.op_submit_start();
     o->op = op_num;
 
     if (m_filestore_do_dump)
       dump_transactions(o->tls, o->op, osr);
 
-    if (m_filestore_journal_parallel) {
-      dout(5) << "queue_transactions (parallel) " << o->op << " " << o->tls << dendl;
-      
-      _op_journal_transactions(tbl, orig_len, o->op, ondisk, osd_op);
-      
-      // queue inside submit_manager op submission lock
-      queue_op(osr, o);
-    } else if (m_filestore_journal_writeahead) {
-      dout(5) << "queue_transactions (writeahead) " << o->op << " " << o->tls << dendl;
-      
+    osr->queue_inq(o);
+    if (o->wal) {
+      o->state = Op::STATE_INIT;
       osr->queue_journal(o->op);
-
       _op_journal_transactions(tbl, orig_len, o->op,
-			       new C_JournaledAhead(this, osr, o, ondisk),
-			       osd_op);
+                               new C_JournaledWritten(this, o),
+                               osd_op);
+      queue_op(osr, o);
     } else {
-      assert(0);
+      o->state = Op::STATE_INIT;
+      osr->queue_journal(o->op);
+      _op_journal_transactions(tbl, orig_len, o->op,
+                               new C_JournaledWritten(this, o),
+                               osd_op);
+      queue_op(osr, o);
     }
-    submit_manager.op_submit_finish(op_num);
-    return 0;
-  }
-
-  if (!journal) {
-    Op *o = build_op(tls, onreadable, onreadable_sync, osd_op);
-    // do not call encode transaction, so reset_coll_object_tbl manually.
-    reset_coll_object_tbl(o->tls);
-    dout(5) << __func__ << " (no journal) " << o << " " << tls << dendl;
-
-    op_queue_reserve_throttle(o, handle);
-
-    uint64_t op_num = submit_manager.op_submit_start();
-    o->op = op_num;
-
-    if (m_filestore_do_dump)
-      dump_transactions(o->tls, o->op, osr);
-
-    queue_op(osr, o);
-
-    if (ondisk)
-      apply_manager.add_waiter(op_num, ondisk);
-    submit_manager.op_submit_finish(op_num);
-    return 0;
-  }
-
-
-  //prepare and encode transactions data out of lock
-  bufferlist tbl;
-  int orig_len = -1;
-  if (journal && journal->is_writeable()) {
-    orig_len = journal->_op_journal_transactions_prepare(tls, tbl);
-  }
-  uint64_t op = submit_manager.op_submit_start();
-  dout(5) << "queue_transactions (trailing journal) " << op << " " << tls << dendl;
-
-  if (m_filestore_do_dump)
-    dump_transactions(tls, op, osr);
-
-  apply_manager.op_apply_start(op);
-  int r = do_transactions(tls, op);
     
-  if (r >= 0) {
-    _op_journal_transactions(tbl, orig_len, op, ondisk, osd_op);
-  } else {
-    delete ondisk;
+    submit_manager.op_submit_finish(op_num);
+    return 0;
   }
 
-  // start on_readable finisher after we queue journal item, as on_readable callback
-  // is allowed to delete the Transaction
-  if (onreadable_sync) {
-    onreadable_sync->complete(r);
-  }
-  apply_finishers[osr->id % apply_finisher_num]->queue(onreadable, r);
-
-  submit_manager.op_submit_finish(op);
-  apply_manager.op_apply_finish(op);
-
-  return r;
+  assert(0 == "Unexpected IO PATH");
 }
 
-void XStore::_journaled_ahead(OpSequencer *osr, Op *o, Context *ondisk)
+void XStore::_journaled_written(Op *o)
 {
-  dout(5) << "_journaled_ahead " << o << " seq " << o->op << " " << *osr << " " << o->tls << dendl;
-
-  // this should queue in order because the journal does it's completions in order.
-  queue_op(osr, o);
-
-  list<Context*> to_queue;
-  osr->dequeue_journal(&to_queue);
-
-  // do ondisk completions async, to prevent any onreadable_sync completions
-  // getting blocked behind an ondisk completion.
-  if (ondisk) {
-    dout(10) << " queueing ondisk " << ondisk << dendl;
-    // In order to avoid the same finisher thread processing the same osr ondisk
-    // and onapplied context. So we can improve single osr bandwidth
-    ondisk_finishers[(osr->id + 1) % ondisk_finisher_num]->queue(ondisk);
+  dout(5) << "_journaled_written " << o << " seq " << o->op << " " << o->osr << " " << o->tls << dendl;
+  {
+    Mutex::Locker l(jwa_lock);
+    if (o->wal || o->state == Op::STATE_WRITE) {
+      o->state = Op::STATE_COMMIT;
+      jwa_queue.push_back(o);
+      jwa_cond.SignalOne();
+    } else {
+      o->state = Op::STATE_JOURNAL;
+    }
   }
-  if (!to_queue.empty()) {
-    ondisk_finishers[(osr->id + 1) % ondisk_finisher_num]->queue(to_queue);
+}
+
+void XStore::_journaled_ack_written(list<Op *> acks)
+{
+  for (list<Op*>::iterator it = acks.begin(); it != acks.end(); ++it) {
+    OpSequencer *osr = (*it)->osr;
+    Op *o = *it;
+    assert(o->state == Op::STATE_COMMIT);
+    Context *ondisk = (*it)->ondisk; 
+    dout(5) << __func__ << o << " seq " << o->op << " " << *osr << " " << o->tls << dendl;
+    o->state = Op::STATE_ACK;
+
+    // this should queue in order because the journal does it's completions in order.
+    queue_op(osr, o);
+
+    list<Context*> to_queue;
+    osr->dequeue_journal(&to_queue);
+
+    // do ondisk completions async, to prevent any onreadable_sync completions
+    // getting blocked behind an ondisk completion.
+    if (ondisk) {
+      dout(10) << " queueing ondisk " << ondisk << dendl;
+      ondisk_finishers[osr->id % ondisk_finisher_num]->queue(ondisk);
+    }
+    if (!to_queue.empty()) {
+      ondisk_finishers[osr->id % ondisk_finisher_num]->queue(to_queue);
+    }
   }
 }
 
 int XStore::_do_transactions(
   list<Transaction*> &tls,
   uint64_t op_seq,
+  Op* o,
   ThreadPool::TPHandle *handle)
 {
   int r = 0;
@@ -2037,7 +2304,9 @@ int XStore::_do_transactions(
   for (list<Transaction*>::iterator p = tls.begin();
        p != tls.end();
        ++p, trans_num++) {
-    r = _do_transaction(**p, op_seq, trans_num, handle);
+    r = _do_transaction(**p, op_seq, trans_num, o, handle);
+    if (o && o->state == Op::STATE_INIT)
+      break;
     if (r < 0)
       break;
     if (handle)
@@ -2306,7 +2575,7 @@ int XStore::_check_replay_guard(int fd, const SequencerPosition& spos)
 }
 
 unsigned XStore::_do_transaction(
-  Transaction& t, uint64_t op_seq, int trans_num,
+  Transaction& t, uint64_t op_seq, int trans_num, Op *o,
   ThreadPool::TPHandle *handle)
 {
 
@@ -2320,7 +2589,10 @@ unsigned XStore::_do_transaction(
   Transaction::iterator i = t.begin();
   
   SequencerPosition spos(op_seq, trans_num, 0);
-  while (i.have_op()) {
+
+  bool do_txn_pause = false;
+
+  while (i.have_op() && !do_txn_pause) {
     if (handle)
       handle->reset_tp_timeout();
 
@@ -2353,8 +2625,16 @@ unsigned XStore::_do_transaction(
         bufferlist bl;
         i.decode_bl(bl);
         tracepoint(objectstore, write_enter, osr_name, off, len);
+
+        if (o && o->state == Op::STATE_INIT) {
+          assert(trans_num == 0 && spos.op == 0);
+        }
+
         if (_check_replay_guard(cid, oid, spos) > 0)
-          r = _write(cid, oid, off, len, bl, fadvise_flags, osr);
+          if (!o || o->state == Op::STATE_INIT || o->wal) {
+            r = _write(cid, oid, off, len, bl, fadvise_flags, osr);
+            do_txn_pause = true;
+          }
         tracepoint(objectstore, write_exit, r);
       }
       break;
@@ -2808,6 +3088,9 @@ unsigned XStore::_do_transaction(
     spos.op++;
   }
 
+  if (o && o->state == Op::STATE_INIT) {
+    assert(do_txn_pause && trans_num == 0);
+  }
   _inject_failure();
 
   return 0;  // FIXME count errors
@@ -3768,16 +4051,14 @@ void XStore::flush()
     assert(0);
   }
  
-  if (m_filestore_journal_writeahead) {
-    if (journal)
-      journal->flush();
-    dout(10) << "flush draining ondisk finisher" << dendl;
-    for (vector<Finisher*>::iterator it = ondisk_finishers.begin(); it != ondisk_finishers.end(); ++it) {
-      (*it)->wait_for_empty();
-    }
-    for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
-      (*it)->wait_for_empty();
-    }
+  if (journal)
+    journal->flush();
+  dout(10) << "flush draining ondisk finisher" << dendl;
+  for (vector<Finisher*>::iterator it = ondisk_finishers.begin(); it != ondisk_finishers.end(); ++it) {
+    (*it)->wait_for_empty();
+  }
+  for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
+    (*it)->wait_for_empty();
   }
 
   _flush_op_queue();
@@ -3791,15 +4072,10 @@ void XStore::sync_and_flush()
 {
   dout(10) << "sync_and_flush" << dendl;
 
-  if (m_filestore_journal_writeahead) {
-    if (journal)
-      journal->flush();
-    _flush_op_queue();
-  } else {
-    // includes m_filestore_journal_parallel
-    _flush_op_queue();
-    sync();
-  }
+  if (journal)
+    journal->flush();
+  _flush_op_queue();
+
   dout(10) << "sync_and_flush done" << dendl;
 }
 

@@ -254,18 +254,48 @@ private:
     }
   } sync_thread;
 
+  Cond jwa_cond;
+  Mutex jwa_lock;
+  bool jwa_stop;
+  list<Context*> acked_queue;
+public:
+  struct Op;
+  class OpSequencer;
+  list<Op*> jwa_queue;
+
+  void _jwa_entry();
+  struct JournaledWrittenAckThread : public Thread {
+    XStore *fs;
+    JournaledWrittenAckThread(XStore *f) : fs(f) {}
+    void *entry() {
+      fs->_jwa_entry();
+      return 0;
+    }
+  } jwa_thread;
+
   // -- op workqueue --
   struct Op {
     utime_t start;
     uint64_t op;
     list<Transaction*> tls;
-    Context *onreadable, *onreadable_sync;
+    Context *ondisk, *onreadable, *onreadable_sync;
     uint64_t ops, bytes;
     TrackedOpRef osd_op;
+    bool wal;
+    OpSequencer *osr;
+    enum apply_state {
+      STATE_INIT     = 0,
+      STATE_WRITE    = 1,
+      STATE_JOURNAL  = 2,
+      STATE_COMMIT   = 3,
+      STATE_ACK      = 4,
+      STATE_DONE     = 5,
+    } state;
   };
   class OpSequencer : public Sequencer_impl {
     Mutex qlock; // to protect q, for benefit of flush (peek/dequeue also protected by lock)
     list<Op*> q;
+    list<Op*> in_q;
     list<uint64_t> jq;
     list<pair<uint64_t, Context*> > flush_commit_waiters;
     Cond cond;
@@ -341,6 +371,14 @@ private:
       assert(apply_lock.is_locked());
       return q.front();
     }
+    void queue_inq(Op *o) {
+      Mutex::Locker l(qlock);
+      in_q.push_back(o);
+    }
+    list<Op*> *get_inq() {
+      assert(qlock.is_locked());
+      return &in_q;
+    }
 
     Op *dequeue(list<Context*> *to_queue) {
       assert(to_queue);
@@ -351,6 +389,20 @@ private:
       cond.Signal();
 
       _wake_flush_waiters(to_queue);
+      return o;
+    }
+
+    void dequeue() {
+      assert(apply_lock.is_locked());
+      Mutex::Locker l(qlock);
+      q.pop_front();
+    }
+
+    Op* dequeue_inq() {
+      assert(apply_lock.is_locked());
+      Mutex::Locker l(qlock);
+      Op *o = in_q.front();
+      in_q.pop_front();
       return o;
     }
 
@@ -454,13 +506,18 @@ private:
   void _do_op(OpSequencer *o, ThreadPool::TPHandle &handle);
   void _finish_op(OpSequencer *o);
   Op *build_op(list<Transaction*>& tls,
-	       Context *onreadable, Context *onreadable_sync,
-	       TrackedOpRef osd_op);
+	       Context *ondisk, Context *onreadable, Context *onreadable_sync,
+	       TrackedOpRef osd_op,
+               OpSequencer *osr);
   void queue_op(OpSequencer *osr, Op *o);
   void op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle = NULL);
   void op_queue_release_throttle(Op *o);
-  void _journaled_ahead(OpSequencer *osr, Op *o, Context *ondisk);
-  friend struct C_JournaledAhead;
+  void _journaled_written(Op *o);
+  void _journaled_ack_written(list<Op *> acks);
+  int get_replay_txns(list<Transaction*>& tls,
+                      list<Transaction*>* jtls, uint64_t seq, bool txns_done);
+  friend struct C_JournaledWritten;
+  friend struct C_JournaledAckWritten;
 
   int open_journal();
 
@@ -490,7 +547,6 @@ public:
   ~XStore();
 
   int _detect_fs();
-  int _sanity_check_fs();
   
   bool test_mount_in_use();
   int read_op_seq(uint64_t *seq);
@@ -535,19 +591,20 @@ public:
   int statfs(struct statfs *buf);
 
   int _do_transactions(
-    list<Transaction*> &tls, uint64_t op_seq,
+    list<Transaction*> &tls, uint64_t op_seq, Op* o,
     ThreadPool::TPHandle *handle);
   int do_transactions(list<Transaction*> &tls, uint64_t op_seq) {
-    return _do_transactions(tls, op_seq, 0);
+    return _do_transactions(tls, op_seq, NULL, 0);
   }
   unsigned _do_transaction(
-    Transaction& t, uint64_t op_seq, int trans_num,
+    Transaction& t, uint64_t op_seq, int trans_num, Op *o,
     ThreadPool::TPHandle *handle);
 
   int queue_transactions(Sequencer *osr, list<Transaction*>& tls,
 			 TrackedOpRef op = TrackedOpRef(),
 			 ThreadPool::TPHandle *handle = NULL);
 
+  bool _should_wal(list<Transaction*> &tls);
   /**
    * set replay guard xattr on given file
    *
@@ -766,9 +823,6 @@ private:
   virtual void handle_conf_change(const struct md_config_t *conf,
 			  const std::set <std::string> &changed);
   float m_filestore_commit_timeout;
-  bool m_filestore_journal_parallel;
-  bool m_filestore_journal_trailing;
-  bool m_filestore_journal_writeahead;
   int m_filestore_fiemap_threshold;
   double m_filestore_max_sync_interval;
   double m_filestore_min_sync_interval;

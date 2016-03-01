@@ -91,6 +91,7 @@ public:
   }
 
   int _op_journal_transactions_prepare(list<ObjectStore::Transaction*>& tls, bufferlist& tbl);
+  int prepare_ack_entry(bufferlist &in, bufferlist &tbl);
 
   void submit_entry(uint64_t seq, bufferlist& bl, uint32_t orig_len,
 		    Context *oncommit,
@@ -206,6 +207,13 @@ public:
     uint32_t pre_pad, post_pad;
     uint64_t magic1;
     uint64_t magic2;
+
+    typedef enum {
+      FLAG_TXN     = 1<<0,
+      FLAG_ACK     = 1<<1,
+    } flag_t;
+
+    uint64_t flags;
     
     static uint64_t make_magic(uint64_t seq, uint32_t len, uint64_t fsid) {
       return (fsid ^ seq ^ len);
@@ -214,6 +222,12 @@ public:
       return
     magic1 == (uint64_t)pos &&
     magic2 == (fsid ^ seq ^ len);
+    }
+    void set_ack_item() {
+      flags = (uint64_t)(flags | FLAG_ACK);
+    }
+    bool is_ack_item() {
+      return (flags & FLAG_ACK) == flags;
     }
   } __attribute__((__packed__, aligned(4)));
 

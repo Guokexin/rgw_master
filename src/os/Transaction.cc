@@ -922,6 +922,21 @@ void ObjectStore::Transaction::dump(ceph::Formatter *f)
       }
       break;
 
+    case Transaction::OP_PGMETA_WRITE:
+      {
+        const coll_t& cid = i.get_cid(op->cid);
+        map<string, bufferlist> aset;
+        i.decode_attrset(aset);
+        f->dump_string("op_name", "pgmeta_write");
+        f->dump_stream("cid") << cid;
+      }
+      break;
+    case Transaction::OP_WRITE_AHEAD:
+      {
+        f->dump_string("op_name", "wal");
+      }
+      break;
+
     default:
       f->dump_string("op_name", "unknown");
       f->dump_unsigned("op_code", op->op);

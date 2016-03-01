@@ -76,6 +76,7 @@ public:
   virtual bool need_entry_crc() { return true; }
 
   virtual int _op_journal_transactions_prepare(list<ObjectStore::Transaction*>& tls, bufferlist& tbl) = 0;
+  virtual int prepare_ack_entry(bufferlist &in, bufferlist &tbl) { return 0; }
 
   // reads/recovery
   

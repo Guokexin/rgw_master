@@ -761,7 +761,9 @@ int mark_pg_for_removal(ObjectStore *fs, spg_t pgid, ObjectStore::Transaction *t
     cout << "setting '_remove' omap key" << std::endl;
     map<string,bufferlist> values;
     ::encode((char)1, values["_remove"]);
-    t->omap_setkeys(coll, pgmeta_oid, values);
+    t->pgmeta_setkeys(coll, pgmeta_oid, values);
+    t->do_wal();
+
   }
   return 0;
 }
@@ -839,7 +841,8 @@ int write_info(ObjectStore::Transaction &t, epoch_t epoch, pg_info_t &info,
     true, true);
   if (ret < 0) ret = -ret;
   if (ret) cerr << "Failed to write info" << std::endl;
-  t.omap_setkeys(coll, pgmeta_oid, km);
+  t.pgmeta_setkeys(coll, pgmeta_oid, km);
+  t.do_wal();
   return ret;
 }
 
@@ -853,7 +856,8 @@ int write_pg(ObjectStore::Transaction &t, epoch_t epoch, pg_info_t &info,
   coll_t coll(info.pgid);
   map<string,bufferlist> km;
   PGLog::write_log(t, &km, log, coll, info.pgid.make_pgmeta_oid(), divergent_priors, true);
-  t.omap_setkeys(coll, info.pgid.make_pgmeta_oid(), km);
+  t.pgmeta_setkeys(coll, info.pgid.make_pgmeta_oid(), km);
+  t.do_wal();
   return 0;
 }
 
@@ -1212,7 +1216,8 @@ int get_omap(ObjectStore *store, coll_t coll, ghobject_t hoid,
 
   if (debug)
     cerr << "\tomap: size " << os.omap.size() << std::endl;
-  t->omap_setkeys(coll, hoid, os.omap);
+  t->pgmeta_setkeys(coll, hoid, os.omap);
+  t->do_wal();
   return 0;
 }
 
@@ -1814,7 +1819,8 @@ int do_import(ObjectStore *store, OSDSuperblock& sb)
   // mark this coll for removal until we're done
   map<string,bufferlist> values;
   ::encode((char)1, values["_remove"]);
-  t->omap_setkeys(coll, pgid.make_pgmeta_oid(), values);
+  t->pgmeta_setkeys(coll, pgid.make_pgmeta_oid(), values);
+  t->do_wal();
 
   store->apply_transaction(*t);
   delete t;
@@ -2160,7 +2166,8 @@ int do_set_omap(ObjectStore *store, coll_t coll, ghobject_t &ghobj, string key, 
 
   t->touch(coll, ghobj);
 
-  t->omap_setkeys(coll, ghobj, attrset);
+  t->pgmeta_setkeys(coll, ghobj, attrset);
+  t->do_wal();
 
   store->apply_transaction(*t);
   return 0;

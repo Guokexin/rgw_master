@@ -48,10 +48,7 @@ int XJournalingObjectStore::journal_replay(uint64_t fs_op_seq)
   uint64_t op_seq = fs_op_seq;
   apply_manager.init_seq(fs_op_seq);
 
-  if (!journal) {
-    submit_manager.set_op_seq(op_seq);
-    return 0;
-  }
+  assert (journal);
 
   int err = journal->open(op_seq);
   if (err < 0) {
@@ -218,8 +215,7 @@ bool XJournalingObjectStore::ApplyManager::commit_start()
   ret = true;
 
  out:
-  if (journal)
-    journal->commit_start(_committing_seq);  // tell the journal too
+  journal->commit_start(_committing_seq);  // tell the journal too
   return ret;
 }
 
@@ -237,8 +233,8 @@ void XJournalingObjectStore::ApplyManager::commit_finish()
   Mutex::Locker l(com_lock);
   dout(10) << "commit_finish thru " << committing_seq << dendl;
   
-  if (journal)
-    journal->committed_thru(committing_seq);
+  assert (journal);
+  journal->committed_thru(committing_seq);
 
   committed_seq = committing_seq;
   
@@ -257,8 +253,8 @@ void XJournalingObjectStore::_op_journal_transactions(
   dout(10) << "op_journal_transactions " << op << dendl;
   if (journal && journal->is_writeable()) {
     journal->submit_entry(op, tbl, orig_len, onjournal, osd_op);
-  } else if (onjournal) {
-    apply_manager.add_waiter(op, onjournal);
+  } else {
+    assert(0 == "Unexpected IO PATH");
   }
 }
 

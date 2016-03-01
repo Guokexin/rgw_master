@@ -383,6 +383,9 @@ public:
 
       OP_SETALLOCHINT = 39,  // cid, oid, object_size, write_size
       OP_COLL_HINT = 40, // cid, type, bl
+
+      OP_PGMETA_WRITE = 62, // write pgmeta
+      OP_WRITE_AHEAD = 63,  // transaction should be writtend ahead log
     };
 
     // Transaction hint type
@@ -429,7 +432,6 @@ public:
     } __attribute__ ((packed)) ;
 
   private:
-    TransactionData data;
 
     void *osr; // NULL on replay
 
@@ -443,7 +445,6 @@ public:
     __le32 object_id;
 
     bufferlist data_bl;
-    bufferlist op_bl;
 
     bufferptr op_ptr;
 
@@ -452,6 +453,8 @@ public:
     list<Context *> on_applied_sync;
 
   public:
+    TransactionData data;
+    bufferlist op_bl;
 
     /* Operations on callback contexts */
     void register_on_applied(Context *c) {
@@ -1020,7 +1023,42 @@ public:
 	data.largest_data_off_in_tbl = tbl.length() + sizeof(__u32);  // we are about to
       }
       data.ops++;
+      if (cid.is_meta())
+        do_wal();
     }
+    void do_wal() {
+      if (use_tbl) {
+        __u32 op = OP_WRITE_AHEAD;
+        ::encode(op, tbl);
+      } else {
+        Op* _op = _get_next_op(false);
+        _op->op = OP_WRITE_AHEAD;
+      }
+      data.ops++;
+    }
+
+    void pgmeta_setkeys(
+      coll_t cid,                           ///< [in] Collection containing oid
+      const ghobject_t &oid,                ///< [in] Object to update
+      const map<string, bufferlist> &attrset ///< [in] Replacement keys and values
+      ) {
+      if (use_tbl) {
+        assert(false);
+        __u32 op = OP_PGMETA_WRITE;
+        ::encode(op, tbl);
+        ::encode(cid, tbl);
+        ::encode(oid, tbl);
+        ::encode(attrset, tbl);
+      } else {
+        Op* _op = _get_next_op();
+        _op->op = OP_PGMETA_WRITE;
+        _op->cid = _get_coll_id(cid);
+        _op->oid = _get_object_id(oid);
+        ::encode(attrset, data_bl);
+      }
+      data.ops++;
+    }
+
     /**
      * zero out the indicated byte range within an object. Some
      * ObjectStore instances may optimize this to release the
