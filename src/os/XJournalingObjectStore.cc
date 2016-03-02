@@ -5,9 +5,9 @@
 #include "common/errno.h"
 #include "common/debug.h"
 
-#define dout_subsys ceph_subsys_journal
+#define dout_subsys ceph_subsys_xjournal
 #undef dout_prefix
-#define dout_prefix *_dout << "journal "
+#define dout_prefix *_dout << "xjournal "
 
 
 
@@ -34,6 +34,62 @@ void XJournalingObjectStore::journal_write_close()
   apply_manager.reset();
 }
 
+int XJournalingObjectStore::get_ack_txns_seq(uint64_t fs_op_seq, list<uint64_t> &acks)
+{
+  dout(10) << "get_ack_txns_seq fs op_seq " << fs_op_seq << dendl;
+
+  uint64_t op_seq = fs_op_seq;
+  apply_manager.init_seq(fs_op_seq);
+
+  assert (journal);
+
+  int err = journal->open(op_seq);
+  if (err < 0) {
+    dout(3) << "get_ack_txns_seq open failed with "
+	    << cpp_strerror(err) << dendl;
+    delete journal;
+    journal = 0;
+    return err;
+  }
+
+  replaying = true;
+
+  while (1) {
+    bufferlist bl;
+    uint64_t seq = op_seq + 1;
+    bool is_ack = false;
+    if (!journal->read_entry(bl, seq, 0, &is_ack)) {
+      dout(3) << "get_ack_txns_seq: end of journal, done." << dendl;
+      break;
+    }
+
+    if (seq <= op_seq) {
+      dout(3) << "get_ack_txns_seq: skipping old op seq " << seq << " <= " << op_seq << dendl;
+      continue;
+    }
+    assert(op_seq == seq-1);
+   
+    if (is_ack)  {
+      dout(3) << "get_ack_txns_seq: " << seq << dendl;
+      list<uint64_t> l;
+      bufferlist::iterator p = bl.begin();
+      ::decode(l, p);
+      ostringstream oss;
+      for (list<uint64_t>::iterator it = l.begin(); it != l.end(); ++it) {
+        oss << *it << " ";
+      }
+      dout(3) << "get_ack_txns_seq: " << oss.str() << dendl;
+      acks.splice(acks.end(), l);
+    }
+
+    op_seq = seq;
+
+    dout(3) << "get_ack_txns_seq: op_seq now " << op_seq << dendl;
+  }
+
+  return 0;
+}
+
 int XJournalingObjectStore::journal_replay(uint64_t fs_op_seq)
 {
   dout(10) << "journal_replay fs op_seq " << fs_op_seq << dendl;
@@ -45,12 +101,18 @@ int XJournalingObjectStore::journal_replay(uint64_t fs_op_seq)
     fs_op_seq = g_conf->journal_replay_from - 1;
   }
 
+  list<uint64_t> acks;
+  int err  = get_ack_txns_seq(fs_op_seq, acks);
+  if (err < 0) {
+    return err;
+  }
+
   uint64_t op_seq = fs_op_seq;
   apply_manager.init_seq(fs_op_seq);
 
   assert (journal);
 
-  int err = journal->open(op_seq);
+  err = journal->open(op_seq);
   if (err < 0) {
     dout(3) << "journal_replay open failed with " 
 	    << cpp_strerror(err) << dendl;
@@ -59,13 +121,12 @@ int XJournalingObjectStore::journal_replay(uint64_t fs_op_seq)
     return err;
   }
 
-  replaying = true;
-
   int count = 0;
   while (1) {
     bufferlist bl;
     uint64_t seq = op_seq + 1;
-    if (!journal->read_entry(bl, seq)) {
+    bool is_ack = false;
+    if (!journal->read_entry(bl, seq, 0, &is_ack)) {
       dout(3) << "journal_replay: end of journal, done." << dendl;
       break;
     }
@@ -76,26 +137,31 @@ int XJournalingObjectStore::journal_replay(uint64_t fs_op_seq)
     }
     assert(op_seq == seq-1);
     
-    dout(3) << "journal_replay: applying op seq " << seq << dendl;
-    bufferlist::iterator p = bl.begin();
-    list<Transaction*> tls;
-    while (!p.end()) {
-      Transaction *t = new Transaction(p);
-      tls.push_back(t);
-    }
+    if (!is_ack &&
+        std::find(acks.begin(), acks.end(), seq) != acks.end()) {
+      dout(3) << "journal_replay: applying op seq " << seq << dendl;
+      bufferlist::iterator p = bl.begin();
+      list<Transaction*> tls;
+      while (!p.end()) {
+        Transaction *t = new Transaction(p);
+        tls.push_back(t);
+      }
 
-    apply_manager.op_apply_start(seq);
-    int r = do_transactions(tls, seq);
-    apply_manager.op_apply_finish(seq);
+      apply_manager.op_apply_start(seq);
+      int r = do_transactions(tls, seq);
+      apply_manager.op_apply_finish(seq);
+
+      while (!tls.empty()) {
+        delete tls.front();
+        tls.pop_front();
+      }
+
+      dout(3) << "journal_replay: r = " << r << ", op_seq now " << op_seq << dendl;
+    } else {
+      dout(3) << "journal_replay: skip op seq " << seq << " ack item " << is_ack << dendl;
+    }
 
     op_seq = seq;
-
-    while (!tls.empty()) {
-      delete tls.front(); 
-      tls.pop_front();
-    }
-
-    dout(3) << "journal_replay: r = " << r << ", op_seq now " << op_seq << dendl;
   }
 
   replaying = false;
@@ -250,7 +316,12 @@ void XJournalingObjectStore::_op_journal_transactions(
   bufferlist& tbl, uint32_t orig_len, uint64_t op,
   Context *onjournal, TrackedOpRef osd_op)
 {
-  dout(10) << "op_journal_transactions " << op << dendl;
+  if (osd_op.get())
+    dout(10) << "op_journal_transactions " << op << " reqid_t "
+             << (static_cast<OpRequest *>(osd_op.get()))->get_reqid() << dendl;
+  else
+    dout(10) << "op_journal_transactions " << op  << dendl;
+
   if (journal && journal->is_writeable()) {
     journal->submit_entry(op, tbl, orig_len, onjournal, osd_op);
   } else {

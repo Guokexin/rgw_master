@@ -126,7 +126,7 @@ int XStore::peek_journal_fsid(uuid_d *fsid)
   // make sure we don't try to use aio or direct_io (and get annoying
   // error messages from failing to do so); performance implications
   // should be irrelevant for this use
-  FileJournal j(*fsid, 0, 0, journalpath.c_str(), false, false);
+  XJournal j(*fsid, 0, 0, journalpath.c_str(), false, false);
   return j.peek_fsid(*fsid);
 }
 
@@ -236,7 +236,10 @@ int XStore::lfn_open(const coll_t& cid,
   assert(outfd);
   int r = 0;
   bool need_lock = true;
-  int flags = O_RDWR;
+  int flags = O_RDWR | O_DIRECT;
+  if (g_conf->journal_force_odsync) {
+    flags |= O_DSYNC;
+  }
 
   if (create)
     flags |= O_CREAT;
@@ -690,7 +693,7 @@ int XStore::open_journal()
 {
   if (journalpath.length()) {
     dout(10) << "open_journal at " << journalpath << dendl;
-    journal = new FileJournal(fsid, &finisher, &sync_cond, journalpath.c_str(),
+    journal = new XJournal(fsid, &finisher, &sync_cond, journalpath.c_str(),
 			      m_journal_dio, m_journal_aio, m_journal_force_aio);
     if (journal)
       journal->logger = logger;
@@ -705,7 +708,7 @@ int XStore::dump_journal(ostream& out)
   if (!journalpath.length())
     return -EINVAL;
 
-  FileJournal *journal = new FileJournal(fsid, &finisher, &sync_cond, journalpath.c_str(), m_journal_dio);
+  XJournal *journal = new XJournal(fsid, &finisher, &sync_cond, journalpath.c_str(), m_journal_dio);
   r = journal->dump(out);
   delete journal;
   return r;
@@ -1587,11 +1590,16 @@ int XStore::umount()
 
   lock.Lock();
   stop = true;
-  jwa_stop = true;
   sync_cond.Signal();
   lock.Unlock();
   sync_thread.join();
+
+  jwa_lock.Lock();
+  jwa_stop = true;
+  jwa_cond.Signal();
+  jwa_lock.Unlock();
   jwa_thread.join();
+
   for (int i = 0; i < wbthrottle_num; ++i) {
     wbthrottles[i]->stop();
   }
@@ -1762,14 +1770,18 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 
   osr->apply_lock.Lock();
   Op *o = osr->peek_queue();
-  assert(o->state == Op::STATE_ACK || o->state == Op::STATE_INIT);
-  if (o->state == Op::STATE_INIT) {
+  assert(o->state == Op::STATE_ACK ||
+         o->state == Op::STATE_INIT ||
+         o->state == Op::STATE_JOURNAL);
+  if (o->state != Op::STATE_ACK) {
     apply_manager.op_apply_start(o->op);
   }
   dout(5) << "_do_op " << o << " seq " << o->op << " " << *osr << "/" << osr->parent << " start" << dendl;
   int r = 0;
   if (o->state == Op::STATE_ACK || !(o->wal)) {
     r = _do_transactions(o->tls, o->op, o, &handle);
+    dout(10) << "_do_op " << o << " seq " << o->op << " r = " << r
+      	     << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
   } else {
     dout(10) << "_do_op skip " << o << " seq " << o->op << " r = " << r
 	     << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
@@ -1777,8 +1789,6 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   if (o->state == Op::STATE_ACK) {
     apply_manager.op_apply_finish(o->op);
   }
-  dout(10) << "_do_op " << o << " seq " << o->op << " r = " << r
-	   << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
 }
 
 void XStore::_finish_op(OpSequencer *osr)
@@ -1795,6 +1805,8 @@ void XStore::_finish_op(OpSequencer *osr)
     }
     osr->dequeue();
     osr->apply_lock.Unlock();  // locked in _do_op
+    dout(10) << "_finish_op put op to jwa_queue " << o << " seq " << o->op 
+             << " " << *osr << "/" << osr->parent << dendl;
     return;
   }
 
@@ -1804,7 +1816,7 @@ void XStore::_finish_op(OpSequencer *osr)
   o = osr->dequeue(&to_queue);
   assert(osr->dequeue_inq() == o);
   
-  dout(10) << "_finish_op " << o << " seq " << o->op << " " << *osr << "/" << osr->parent << dendl;
+  dout(10) << "_finish_op " << o << *osr << "/" << osr->parent << dendl;
   osr->apply_lock.Unlock();  // locked in _do_op
 
   // called with tp lock held
@@ -1860,13 +1872,20 @@ void XStore::_jwa_entry()
       jwa_cond.Wait(jwa_lock); 
       dout(20) << __func__ << " wake" << dendl;
     } else {
-      list<Op*> jwa_q;
-      jwa_q.swap(jwa_queue);
+      list<Op*> jwa_opq;
+      list<uint64_t> jwa_seq;
+      for (list<Op*>::iterator it = jwa_queue.begin();
+           it != jwa_queue.end();
+           ++it) {
+        jwa_seq.push_back((*it)->op);
+      }
+      jwa_opq.swap(jwa_queue);
       jwa_lock.Unlock();
 
       bufferlist bl;
-      ::encode(jwa_q, bl);
-      Op *o = build_op(tls, new C_JournaledAckWritten(this, jwa_q),
+      ::encode(jwa_seq, bl);
+      Context *ondisk = new C_JournaledAckWritten(this, jwa_opq);
+      Op *o = build_op(tls, NULL,
                        NULL, NULL, TrackedOpRef(), NULL);
       bufferlist tbl;
       int orig_len = journal->prepare_ack_entry(bl, tbl);
@@ -1874,9 +1893,11 @@ void XStore::_jwa_entry()
       o->op = op_num;
       o->osr = NULL;
       
+      dout(20) << __func__ << " seq " << op_num << " ack seq " << jwa_seq << dendl;
+
       // FIXME osr->queue_journal(o->op);
       if (journal && journal->is_writeable()) {
-        journal->submit_entry(op_num, tbl, orig_len, NULL, TrackedOpRef());
+        journal->submit_entry(op_num, tbl, orig_len, ondisk, TrackedOpRef());
         submit_manager.op_submit_finish(op_num);
       } else {
         assert(0 == "Unexpected IO PATH");
@@ -1888,12 +1909,12 @@ void XStore::_jwa_entry()
   dout(10) << __func__ << " end" << dendl;
 }
 
-int XStore::get_replay_txns(list<Transaction*>& tls,
-  list<Transaction*>* jtls, uint64_t seq, bool txns_done)
+bool XStore::get_replay_txns(list<Transaction*>& tls,
+  list<Transaction*>* jtls)
 {
   bool should_wal = _should_wal(tls);
-  if (should_wal && txns_done) {
-    return 0;
+  if (should_wal) {
+    return true;
   }
 
   Transaction* jtran = new Transaction();
@@ -1911,16 +1932,8 @@ int XStore::get_replay_txns(list<Transaction*>& tls,
         
       case Transaction::OP_WRITE:
         {
-          const coll_t& cid = i.get_cid(op->cid);
-          const ghobject_t& oid = i.get_oid(op->oid);
-          uint64_t off = op->off;
-          uint64_t len = op->len;
-          if (!txns_done) {
-            bufferlist bl;
-            i.decode_bl(bl);
-            jtran->touch(cid, oid);
-          }
-          dout(15) << "write " << cid << "/" << oid << " " << off << "~" << len << dendl;
+          bufferlist bl;
+          i.decode_bl(bl);
         }
         break;
         
@@ -1943,17 +1956,7 @@ int XStore::get_replay_txns(list<Transaction*>& tls,
           string name = i.decode_string();
           bufferlist bl;
           i.decode_bl(bl);
-          if (!txns_done && name == OI_ATTR) {
-            // set unstable flag
-            object_info_t oi(bl);
-            oi.set_unstable();
-            bufferlist bv;
-            ::encode(oi, bv);
-            dout(20) << "oid " << oid << " version " << oi.version << " seq " << seq << dendl;
-            jtran->setattr(cid, oid, name, bv);
-          } else {
-            jtran->setattr(cid, oid, name, bl);
-          }
+          jtran->setattr(cid, oid, name, bl);
         }
         break;
         
@@ -1963,18 +1966,6 @@ int XStore::get_replay_txns(list<Transaction*>& tls,
           const ghobject_t& oid = i.get_oid(op->oid);
           map<string, bufferptr> aset;
           i.decode_attrset(aset);
-          if (!txns_done && aset.count(OI_ATTR)) {
-            // set unstable flag
-            bufferlist bv;
-            bv.push_back(aset.find(OI_ATTR)->second);
-            object_info_t oi(bv);
-            oi.set_unstable();
-            bv.clear();
-            ::encode(oi, bv);
-            dout(20) << "oid " << oid << " version " << oi.version << " seq " << seq << dendl;
-            bv.c_str();
-            aset.insert(make_pair(string(OI_ATTR), bv.buffers().front()));
-          }
           jtran->setattrs(cid, oid, aset);
         }
         break;
@@ -2061,21 +2052,31 @@ int XStore::get_replay_txns(list<Transaction*>& tls,
           i.decode_attrset(aset);
         }
         break;
-      case Transaction::OP_PGMETA_WRITE:
+      case Transaction::OP_PGMETA_SETKEYS:
         {
-          if (txns_done) {
-            const coll_t& cid = i.get_cid(op->cid);
-            const ghobject_t& oid = i.get_oid(op->oid);
-            map<string, bufferlist> aset;
-            i.decode_attrset(aset);
-            jtran->pgmeta_setkeys(cid, oid, aset);
-          }
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          map<string, bufferlist> aset;
+          i.decode_attrset(aset);
+          jtran->pgmeta_setkeys(cid, oid, aset);
         }
         break;
       case Transaction::OP_OMAP_RMKEYS:
         {
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
           set<string> keys;
           i.decode_keyset(keys);
+          jtran->omap_rmkeys(cid, oid, keys);
+        }
+        break;
+      case Transaction::OP_PGMETA_RMKEYS:
+        {
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          set<string> keys;
+          i.decode_keyset(keys);
+          jtran->pgmeta_rmkeys(cid, oid, keys);
         }
         break;
       case Transaction::OP_OMAP_RMKEYRANGE:
@@ -2103,21 +2104,10 @@ int XStore::get_replay_txns(list<Transaction*>& tls,
         assert(0);
       }
     }
-    if (should_wal) {
-      dout(20) << " transaction dump:\n";
-      JSONFormatter f(true);
-      f.open_object_section("transaction");
-      (*p)->dump(&f);
-      f.close_section();
-      f.flush(*_dout);
-      *_dout << dendl;
-      dout(25) << __func__ << " enable wal" << dendl;
-    }
   }
   assert(jtls->empty());
-  if (!should_wal)
-    jtls->push_back(jtran);
-  return 0;
+  jtls->push_back(jtran);
+  return false;
 }
 
 
@@ -2136,20 +2126,25 @@ bool XStore::_should_wal(list<Transaction*> &tls)
     ops_bl.append((*p)->op_bl);
     ops += (*p)->data.ops;
   }
+  if (ops <= 2) {
+    wal = true;
+  }
   if (!wal) {
     uint32_t not_wal_ops[] = {Transaction::OP_WRITE, Transaction::OP_SETATTRS,
-      Transaction::OP_OMAP_SETKEYS};
+      Transaction::OP_PGMETA_SETKEYS};
     char* op_buffer_p = ops_bl.get_contiguous(0, ops * sizeof(Transaction::Op));
     char* op_p = op_buffer_p;
  
     for (uint32_t i = 0, j = 0; i < ops; i++) {
       Transaction::Op* op = reinterpret_cast<Transaction::Op*>(op_p);
       op_p += sizeof(Transaction::Op);
-      if (i == 2 && op->op == Transaction::OP_OMAP_RMKEYS)
+      if (i == 0 && op->op == Transaction::OP_SETALLOCHINT)
         continue;
-      if (op->op == Transaction::OP_WRITE_AHEAD ||
-          op->op != not_wal_ops[j] ||
-          i >= sizeof(not_wal_ops) / sizeof(uint32_t)) {
+      if (i == 2 && op->op == Transaction::OP_PGMETA_RMKEYS)
+        continue;
+      if (op->op == Transaction::OP_WRITE_AHEAD_LOG ||
+          j >= sizeof(not_wal_ops) / sizeof(uint32_t) ||
+          op->op != not_wal_ops[j]) {
         wal = true;
         break;
       }
@@ -2212,15 +2207,28 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
 
   if (journal && journal->is_writeable()) {
     Op *o = build_op(tls, ondisk, onreadable, onreadable_sync, osd_op, osr);
-    o->wal = _should_wal(o->tls);
-    o->osr = osr;
+    list<ObjectStore::Transaction*> *jtls = new list<ObjectStore::Transaction*>;
+    o->wal = get_replay_txns(o->tls, jtls);
+    if (o->wal) {
+      delete jtls;
+      jtls = &(o->tls);
+    }
     op_queue_reserve_throttle(o, handle);
     journal->throttle();
     //prepare and encode transactions data out of lock
     bufferlist tbl;
-    int orig_len = journal->_op_journal_transactions_prepare(o->tls, tbl);
+    int orig_len = journal->_op_journal_transactions_prepare(*jtls, tbl);
+    if (!(o->wal)) {
+      for (list<ObjectStore::Transaction*>::iterator p = jtls->begin();
+           p != jtls->end(); ++p) {
+        delete *p;
+        *p = NULL;
+      }
+      delete jtls;
+    }
     uint64_t op_num = submit_manager.op_submit_start();
     o->op = op_num;
+    dout(5) << "build_op " << o << dendl;
 
     if (m_filestore_do_dump)
       dump_transactions(o->tls, o->op, osr);
@@ -2251,16 +2259,15 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
 
 void XStore::_journaled_written(Op *o)
 {
-  dout(5) << "_journaled_written " << o << " seq " << o->op << " " << o->osr << " " << o->tls << dendl;
-  {
-    Mutex::Locker l(jwa_lock);
-    if (o->wal || o->state == Op::STATE_WRITE) {
-      o->state = Op::STATE_COMMIT;
-      jwa_queue.push_back(o);
-      jwa_cond.SignalOne();
-    } else {
-      o->state = Op::STATE_JOURNAL;
-    }
+  Mutex::Locker l(jwa_lock);
+  if (o->state == Op::STATE_WRITE) {
+    o->state = Op::STATE_COMMIT;
+    jwa_queue.push_back(o);
+    jwa_cond.SignalOne();
+    dout(5) << "_journaled_written put op to jwa_queue" << *o << dendl;
+  } else {
+    o->state = Op::STATE_JOURNAL;
+    dout(5) << "_journaled_written wait xstore finish" << *o << dendl;
   }
 }
 
@@ -2271,7 +2278,7 @@ void XStore::_journaled_ack_written(list<Op *> acks)
     Op *o = *it;
     assert(o->state == Op::STATE_COMMIT);
     Context *ondisk = (*it)->ondisk; 
-    dout(5) << __func__ << o << " seq " << o->op << " " << *osr << " " << o->tls << dendl;
+    dout(5) << __func__ << *o << dendl;
     o->state = Op::STATE_ACK;
 
     // this should queue in order because the journal does it's completions in order.
@@ -2584,13 +2591,16 @@ unsigned XStore::_do_transaction(
 #endif
   int osr = t.get_osr() ? static_cast<OpSequencer*>(t.get_osr())->id : 0;
 
-  dout(10) << "_do_transaction on " << &t << " osr " << osr << dendl;
+  bool wal = o? o->wal : false;
+  dout(10) << "_do_transaction on " << &t << " osr " << osr << " seq " << op_seq 
+           << " trans_num " << trans_num << " wal " << wal << dendl;
 
   Transaction::iterator i = t.begin();
   
   SequencerPosition spos(op_seq, trans_num, 0);
 
   bool do_txn_pause = false;
+  bool alloc = false;
 
   while (i.have_op() && !do_txn_pause) {
     if (handle)
@@ -2626,13 +2636,25 @@ unsigned XStore::_do_transaction(
         i.decode_bl(bl);
         tracepoint(objectstore, write_enter, osr_name, off, len);
 
-        if (o && o->state == Op::STATE_INIT) {
-          assert(trans_num == 0 && spos.op == 0);
+        if (o && o->state != Op::STATE_ACK) {
+          if (trans_num != 0 || (!alloc && spos.op != 0) ||
+              (alloc && spos.op != 1)) {
+	    dout(0) << " transaction dump:\n";
+	    JSONFormatter f(true);
+	    f.open_object_section("transaction");
+	    t.dump(&f);
+	    f.close_section();
+	    f.flush(*_dout);
+	    *_dout << dendl;
+            assert(0 == "Unexpected Logic");
+          }
         }
 
         if (_check_replay_guard(cid, oid, spos) > 0)
-          if (!o || o->state == Op::STATE_INIT || o->wal) {
+          if (replaying || o->state != Op::STATE_ACK || o->wal) {
             r = _write(cid, oid, off, len, bl, fadvise_flags, osr);
+          }
+          if (!replaying && o->state != Op::STATE_ACK) {
             do_txn_pause = true;
           }
         tracepoint(objectstore, write_exit, r);
@@ -2929,7 +2951,33 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, omap_setkeys_exit, r);
       }
       break;
+    case Transaction::OP_PGMETA_SETKEYS:
+      {
+        const coll_t& cid = i.get_cid(op->cid);
+        const ghobject_t& oid = i.get_oid(op->oid);
+        map<string, bufferlist> aset;
+        i.decode_attrset(aset);
+        tracepoint(objectstore, omap_setkeys_enter, osr_name);
+        r = _omap_setkeys(cid, oid, aset, spos);
+        tracepoint(objectstore, omap_setkeys_exit, r);
+      }
+      break;
+    case Transaction::OP_WRITE_AHEAD_LOG:
+      {
+      }
+      break;
     case Transaction::OP_OMAP_RMKEYS:
+      {
+        const coll_t& cid = i.get_cid(op->cid);
+        const ghobject_t& oid = i.get_oid(op->oid);
+        set<string> keys;
+        i.decode_keyset(keys);
+        tracepoint(objectstore, omap_rmkeys_enter, osr_name);
+        r = _omap_rmkeys(cid, oid, keys, spos);
+        tracepoint(objectstore, omap_rmkeys_exit, r);
+      }
+      break;
+    case Transaction::OP_PGMETA_RMKEYS:
       {
         const coll_t& cid = i.get_cid(op->cid);
         const ghobject_t& oid = i.get_oid(op->oid);
@@ -2988,6 +3036,7 @@ unsigned XStore::_do_transaction(
 
     case Transaction::OP_SETALLOCHINT:
       {
+        alloc = true;
         coll_t cid = i.get_cid(op->cid);
         ghobject_t oid = i.get_oid(op->oid);
         uint64_t expected_object_size = op->expected_object_size;
@@ -3088,8 +3137,18 @@ unsigned XStore::_do_transaction(
     spos.op++;
   }
 
-  if (o && o->state == Op::STATE_INIT) {
-    assert(do_txn_pause && trans_num == 0);
+  if (!replaying && o->state != Op::STATE_ACK) {
+    if (trans_num != 0 || (!alloc && spos.op != 1) ||
+        (alloc && spos.op != 2)) {
+      dout(0) << " transaction dump:\n";
+      JSONFormatter f(true);
+      f.open_object_section("transaction");
+      t.dump(&f);
+      f.close_section();
+      f.flush(*_dout);
+      *_dout << dendl;
+      assert(0 == "Unexpected Logic");
+    }
   }
   _inject_failure();
 
@@ -3836,7 +3895,6 @@ void XStore::sync_entry()
     if (apply_manager.commit_start()) {
       utime_t start = ceph_clock_now(g_ceph_context);
       uint64_t cp = apply_manager.get_committing_seq();
-
       sync_entry_timeo_lock.Lock();
       SyncEntryTimeout *sync_entry_timeo =
 	new SyncEntryTimeout(m_filestore_commit_timeout);

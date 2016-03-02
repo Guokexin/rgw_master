@@ -485,8 +485,10 @@ function activate_osd() {
     ceph_args+=" --osd-pool-default-erasure-code-directory=.libs"
     ceph_args+=" --run-dir=$dir"
     ceph_args+=" --debug-osd=20"
+    ceph_args+=" --debug-xstore=20"
     ceph_args+=" --log-file=$dir/\$name.log"
     ceph_args+=" --pid-file=$dir/\$name.pid"
+    ceph_args+=" --osd_class_dir=.libs"
     ceph_args+=" "
     ceph_args+="$@"
     mkdir -p $osd_data

@@ -384,8 +384,9 @@ public:
       OP_SETALLOCHINT = 39,  // cid, oid, object_size, write_size
       OP_COLL_HINT = 40, // cid, type, bl
 
-      OP_PGMETA_WRITE = 62, // write pgmeta
-      OP_WRITE_AHEAD = 63,  // transaction should be writtend ahead log
+      OP_PGMETA_RMKEYS = 61, // rm pgmeta
+      OP_PGMETA_SETKEYS = 62, // write pgmeta
+      OP_WRITE_AHEAD_LOG = 63,  // transaction should be writtend ahead log
     };
 
     // Transaction hint type
@@ -1028,11 +1029,11 @@ public:
     }
     void do_wal() {
       if (use_tbl) {
-        __u32 op = OP_WRITE_AHEAD;
+        __u32 op = OP_WRITE_AHEAD_LOG;
         ::encode(op, tbl);
       } else {
         Op* _op = _get_next_op(false);
-        _op->op = OP_WRITE_AHEAD;
+        _op->op = OP_WRITE_AHEAD_LOG;
       }
       data.ops++;
     }
@@ -1044,14 +1045,14 @@ public:
       ) {
       if (use_tbl) {
         assert(false);
-        __u32 op = OP_PGMETA_WRITE;
+        __u32 op = OP_PGMETA_SETKEYS;
         ::encode(op, tbl);
         ::encode(cid, tbl);
         ::encode(oid, tbl);
         ::encode(attrset, tbl);
       } else {
         Op* _op = _get_next_op();
-        _op->op = OP_PGMETA_WRITE;
+        _op->op = OP_PGMETA_SETKEYS;
         _op->cid = _get_coll_id(cid);
         _op->oid = _get_object_id(oid);
         ::encode(attrset, data_bl);
@@ -1493,6 +1494,27 @@ public:
       } else {
         Op* _op = _get_next_op();
         _op->op = OP_OMAP_RMKEYS;
+        _op->cid = _get_coll_id(cid);
+        _op->oid = _get_object_id(oid);
+        ::encode(keys, data_bl);
+      }
+      data.ops++;
+    }
+
+    void pgmeta_rmkeys(
+      coll_t cid,             ///< [in] Collection containing oid
+      const ghobject_t &oid,  ///< [in] Object from which to remove the omap
+      const set<string> &keys ///< [in] Keys to clear
+      ) {
+      if (use_tbl) {
+        __u32 op = OP_PGMETA_RMKEYS;
+        ::encode(op, tbl);
+        ::encode(cid, tbl);
+        ::encode(oid, tbl);
+        ::encode(keys, tbl);
+      } else {
+        Op* _op = _get_next_op();
+        _op->op = OP_PGMETA_RMKEYS;
         _op->cid = _get_coll_id(cid);
         _op->oid = _get_object_id(oid);
         ::encode(keys, data_bl);

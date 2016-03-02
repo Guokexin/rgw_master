@@ -292,6 +292,17 @@ public:
       STATE_DONE     = 5,
     } state;
   };
+
+  friend ostream& operator<<(ostream& out, const Op& o)
+  {
+    out << " " << &o << " seq " << o.op << " ondisk " << o.ondisk
+        << " osr " << *(o.osr) << "/" << o.osr->parent << " wal " << o.wal;
+    if (o.osd_op)
+      out << " op " << o.osd_op;
+    out << " ";
+    return out;
+  }
+
   class OpSequencer : public Sequencer_impl {
     Mutex qlock; // to protect q, for benefit of flush (peek/dequeue also protected by lock)
     list<Op*> q;
@@ -514,8 +525,7 @@ public:
   void op_queue_release_throttle(Op *o);
   void _journaled_written(Op *o);
   void _journaled_ack_written(list<Op *> acks);
-  int get_replay_txns(list<Transaction*>& tls,
-                      list<Transaction*>* jtls, uint64_t seq, bool txns_done);
+  bool get_replay_txns(list<Transaction*>& tls, list<Transaction*>* jtls);
   friend struct C_JournaledWritten;
   friend struct C_JournaledAckWritten;
 

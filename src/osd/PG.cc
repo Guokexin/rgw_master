@@ -2877,6 +2877,8 @@ epoch_t PG::peek_map_epoch(ObjectStore *store,
 
 void PG::write_if_dirty(ObjectStore::Transaction& t)
 {
+  dout(20) << " write_if_dirty dirty_big_info " << dirty_big_info 
+           <<  " dirty_info " << dirty_info << dendl; 
   map<string,bufferlist> km;
   if (dirty_big_info || dirty_info)
     prepare_write_info(&km);
@@ -4674,6 +4676,7 @@ void PG::start_flush(ObjectStore::Transaction *t,
 		     list<Context *> *on_safe)
 {
   // flush in progress ops
+  dout(20) << "start_flush txn " << t << dendl;
   FlushStateRef flush_trigger(
     new FlushState(this, get_osdmap()->get_epoch()));
   t->nop();

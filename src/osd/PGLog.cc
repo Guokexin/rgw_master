@@ -849,7 +849,7 @@ void PGLog::_write_log(
   }
 
   if (!to_remove.empty())
-    t.omap_rmkeys(coll, log_oid, to_remove);
+    t.pgmeta_rmkeys(coll, log_oid, to_remove);
 }
 
 void PGLog::read_log(ObjectStore *store, coll_t pg_coll,

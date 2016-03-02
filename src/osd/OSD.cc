@@ -7210,6 +7210,7 @@ void OSD::dispatch_context_transaction(PG::RecoveryCtx &ctx, PG *pg,
       pg->osr.get(),
       ctx.transaction, ctx.on_applied, ctx.on_safe, NULL,
       TrackedOpRef(), handle);
+    dout(20) << __func__ << " txn " << ctx.transaction << " osr " << pg->osr.get() << dendl;
     assert(tr == 0);
     ctx.transaction = new ObjectStore::Transaction;
     ctx.on_applied = new C_Contexts(cct);
@@ -7267,6 +7268,7 @@ void OSD::dispatch_context(PG::RecoveryCtx &ctx, PG *pg, OSDMapRef curmap,
     delete ctx.on_applied;
     delete ctx.on_safe;
   } else {
+    dout(20) << __func__ << " txn " << ctx.transaction << " osr " << pg->osr.get() << dendl;
     ctx.on_applied->add(new ObjectStore::C_DeleteTransaction(ctx.transaction));
     int tr = store->queue_transaction(
       pg->osr.get(),

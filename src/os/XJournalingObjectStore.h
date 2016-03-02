@@ -115,6 +115,8 @@ protected:
   void journal_write_close();
   int journal_replay(uint64_t fs_op_seq);
 
+  int get_ack_txns_seq(uint64_t fs_op_seq, list<uint64_t> &acks);
+
   void _op_journal_transactions(bufferlist& tls, uint32_t orig_len, uint64_t op,
 				Context *onjournal, TrackedOpRef osd_op);
 

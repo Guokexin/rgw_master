@@ -207,13 +207,12 @@ public:
     uint32_t pre_pad, post_pad;
     uint64_t magic1;
     uint64_t magic2;
+    uint64_t flags;
 
-    typedef enum {
+    enum {
       FLAG_TXN     = 1<<0,
       FLAG_ACK     = 1<<1,
-    } flag_t;
-
-    uint64_t flags;
+    };
     
     static uint64_t make_magic(uint64_t seq, uint32_t len, uint64_t fsid) {
       return (fsid ^ seq ^ len);
@@ -227,7 +226,7 @@ public:
       flags = (uint64_t)(flags | FLAG_ACK);
     }
     bool is_ack_item() {
-      return (flags & FLAG_ACK) == flags;
+      return (flags & FLAG_ACK) == FLAG_ACK;
     }
   } __attribute__((__packed__, aligned(4)));
 
@@ -468,13 +467,35 @@ private:
   bool read_entry(
     bufferlist &bl,
     uint64_t &last_seq,
-    bool *corrupt
+    bool *corrupt,
+    entry_header_t *h = 0
     );
 
   bool read_entry(
     bufferlist &bl,
+    uint64_t &last_seq,
+    bool *corrupt,
+    bool *is_ack = 0
+    ) {
+    if (is_ack) {
+      entry_header_t h;
+      memset(&h, 0, sizeof(h));
+      int r = read_entry(bl, last_seq, corrupt, &h);
+      if (h.is_ack_item()) {
+        *is_ack = true;
+      } else {
+        *is_ack = false;
+      }
+      return r;
+    } else {
+      return read_entry(bl, last_seq, corrupt, (entry_header_t*)0);
+    }
+  }
+
+  bool read_entry(
+    bufferlist &bl,
     uint64_t &last_seq) {
-    return read_entry(bl, last_seq, 0);
+    return read_entry(bl, last_seq, 0, (entry_header_t*)0);
   }
 
   __u32 get_head_align() {

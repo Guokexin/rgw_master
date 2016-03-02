@@ -26,6 +26,7 @@ void ObjectStore::Transaction::_build_actions_from_tbl()
   use_tbl = false;
   bufferlist::iterator p = tbl.begin();
   __u32 op;
+  uint64_t odd_ops = 0;
   while(!p.end()) {
     ::decode(op, p);
 
@@ -63,6 +64,30 @@ void ObjectStore::Transaction::_build_actions_from_tbl()
 	::decode(bl, p);
 
 	write(cid, oid, off, len, bl);
+
+        if (cid.is_meta()) {
+          odd_ops++;
+        }
+      }
+      break;
+
+    case Transaction::OP_PGMETA_SETKEYS:
+      {
+        coll_t cid;
+        ghobject_t oid;
+        map<string, bufferlist> aset;
+
+        ::decode(cid, p);
+        ::decode(oid, p);
+        ::decode(aset, p);
+
+        pgmeta_setkeys(cid, oid, aset);
+      }
+      break;
+
+    case Transaction::OP_WRITE_AHEAD_LOG:
+      {
+        do_wal();
       }
       break;
 
@@ -419,6 +444,20 @@ void ObjectStore::Transaction::_build_actions_from_tbl()
       }
       break;
 
+    case Transaction::OP_PGMETA_RMKEYS:
+      {
+	coll_t cid;
+	ghobject_t oid;
+	set<string> keys;
+
+	::decode(cid, p);
+	::decode(oid, p);
+	::decode(keys, p);
+
+	pgmeta_rmkeys(cid, oid, keys);
+      }
+      break;
+
     case Transaction::OP_OMAP_RMKEYRANGE:
       {
 	coll_t cid;
@@ -501,7 +540,7 @@ void ObjectStore::Transaction::_build_actions_from_tbl()
     }
   }
   use_tbl = true;
-  assert(ops == data.ops);
+  assert((ops + odd_ops) == data.ops);
 }
 
 #pragma GCC diagnostic pop
@@ -838,6 +877,18 @@ void ObjectStore::Transaction::dump(ceph::Formatter *f)
       }
       break;
 
+    case Transaction::OP_PGMETA_RMKEYS:
+      {
+        coll_t cid = i.get_cid(op->cid);
+        ghobject_t oid = i.get_oid(op->oid);
+	set<string> keys;
+	i.decode_keyset(keys);
+	f->dump_string("op_name", "pgmeta_rmkeys");
+	f->dump_stream("collection") << cid;
+	f->dump_stream("oid") << oid;
+      }
+      break;
+
     case Transaction::OP_OMAP_SETHEADER:
       {
         coll_t cid = i.get_cid(op->cid);
@@ -922,7 +973,7 @@ void ObjectStore::Transaction::dump(ceph::Formatter *f)
       }
       break;
 
-    case Transaction::OP_PGMETA_WRITE:
+    case Transaction::OP_PGMETA_SETKEYS:
       {
         const coll_t& cid = i.get_cid(op->cid);
         map<string, bufferlist> aset;
@@ -931,7 +982,7 @@ void ObjectStore::Transaction::dump(ceph::Formatter *f)
         f->dump_stream("cid") << cid;
       }
       break;
-    case Transaction::OP_WRITE_AHEAD:
+    case Transaction::OP_WRITE_AHEAD_LOG:
       {
         f->dump_string("op_name", "wal");
       }

@@ -36,9 +36,9 @@
 #include "common/blkdev.h"
 #include "common/linux_version.h"
 
-#define dout_subsys ceph_subsys_journal
+#define dout_subsys ceph_subsys_xjournal
 #undef dout_prefix
-#define dout_prefix *_dout << "journal "
+#define dout_prefix *_dout << "xjournal "
 
 const static int64_t ONE_MEG(1 << 20);
 
@@ -1850,7 +1850,8 @@ void XJournal::wrap_read_bl(
 bool XJournal::read_entry(
   bufferlist &bl,
   uint64_t &next_seq,
-  bool *corrupt)
+  bool *corrupt,
+  entry_header_t *h)
 {
   if (corrupt)
     *corrupt = false;
@@ -1869,7 +1870,8 @@ bool XJournal::read_entry(
     &next_pos,
     &bl,
     &seq,
-    &ss);
+    &ss,
+    h);
   if (result == SUCCESS) {
     if (next_seq > seq) {
       return false;
