@@ -245,6 +245,7 @@ else
         debug objecter = 20
         debug monc = 20
         debug journal = 20
+        debug xjournal = 20
         debug filestore = 20
         debug xstore = 20
         debug rgw = 20
