@@ -2304,7 +2304,7 @@ int main(int argc, char **argv)
   desc.add_options()
     ("help", "produce help message")
     ("type", po::value<string>(&type),
-     "Arg is one of [filestore (default), memstore, keyvaluestore]")
+     "Arg is one of [filestore (default), xstore, memstore, keyvaluestore]")
     ("data-path", po::value<string>(&dpath),
      "path to object store, mandatory")
     ("journal-path", po::value<string>(&jpath),
@@ -2420,6 +2420,10 @@ int main(int argc, char **argv)
     cerr << "Must provide --journal-path" << std::endl;
     usage(desc);
   }
+  if (type == "xstore" && !vm.count("journal-path")) {
+    cerr << "Must provide --journal-path" << std::endl;
+    usage(desc);
+  }
   if (op != "list" && vm.count("object") && !vm.count("objcmd")) {
     cerr << "Invalid syntax, missing command" << std::endl;
     usage(desc);
@@ -2497,7 +2501,7 @@ int main(int argc, char **argv)
      exit(1);
   }
   //Verify data data-path really is a filestore
-  if (type == "filestore") {
+  if (type == "filestore" || type == "xstore") {
     if (!S_ISDIR(st.st_mode)) {
       invalid_filestore_path(dpath);
     }
@@ -2526,7 +2530,7 @@ int main(int argc, char **argv)
 
   ObjectStore *fs = ObjectStore::create(g_ceph_context, type, dpath, jpath, flags);
   if (fs == NULL) {
-    cerr << "Must provide --type (filestore, memstore, keyvaluestore)" << std::endl;
+    cerr << "Must provide --type (filestore, xstore, memstore, keyvaluestore)" << std::endl;
     exit(1);
   }
 
