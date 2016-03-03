@@ -64,7 +64,7 @@ class Monitor;
 
 #define OSD_METADATA_PREFIX "osd_metadata"
 #define NO_SN_MAX_OSD 10
-#define DEFAULT_EXPIRE_INTERVAL (90*24*3600)
+#define DEFAULT_EXPIRE_INTERVAL (18*3600)
 #define SHUTDOWN_MON_DELAY 300.0
 
 /// information about a particular peer's failure reports for one osd
