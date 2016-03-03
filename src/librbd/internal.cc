@@ -3468,7 +3468,13 @@ reprotect_and_return_err:
 
     map<string, bufferlist> data;
     data[key].append(value);
-    return cls_client::metadata_set(&ictx->md_ctx, ictx->header_oid, data);
+    r = cls_client::metadata_set(&ictx->md_ctx, ictx->header_oid, data);
+    if (r < 0) {
+      return r;
+    }
+
+    ictx->aware_metadata("conf_", data);
+    return 0;
   }
 
   int metadata_remove(ImageCtx *ictx, const string &key)

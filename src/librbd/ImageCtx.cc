@@ -957,10 +957,6 @@ public:
         aware_metadata(METADATA_CONF_PREFIX, pairs);
         start = pairs.rbegin()->first;
       } while (is_continue);
-
-      if (throttle.enabled()) {
-        throttle.attach_context(new ThrottleContext(this, false), new ThrottleContext(this, true));
-      }
     }
 
 #define ASSIGN_OPTION(config)                                                      \
@@ -1010,6 +1006,7 @@ public:
         "rbd_throttle_iops_read_max", THROTTLE_OPS_READ)(
         "rbd_throttle_iops_write", THROTTLE_OPS_WRITE)(
         "rbd_throttle_iops_write_max", THROTTLE_OPS_WRITE);
+    bool throttle_enabled_pre = throttle.enabled();
 
     for (map<string, enum BucketType>::const_iterator it = throttle_configs.begin();
          it != throttle_configs.end(); ++it) {
@@ -1033,6 +1030,10 @@ public:
                        << " avg=" << avg << " max=" << max << dendl;
         throttle.config(it->second, avg, max);
       }
+    }
+
+    if (!throttle_enabled_pre && throttle.enabled()) {
+      throttle.attach_context(new ThrottleContext(this, false), new ThrottleContext(this, true));
     }
   }
 
