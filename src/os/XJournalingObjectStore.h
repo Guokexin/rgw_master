@@ -51,32 +51,32 @@ protected:
     Finisher &finisher;
 
     Mutex apply_lock;
-    bool blocked;
-    Cond blocked_cond;
     int open_ops;
     uint64_t max_applied_seq;
 
     Mutex com_lock;
     map<version_t, vector<Context*> > commit_waiters;
     uint64_t committing_seq, committed_seq;
+    set<uint64_t> unapply_seq;
+    bool replaying;
 
   public:
     ApplyManager(Journal *&j, Finisher &f) :
       journal(j), finisher(f),
       apply_lock("JOS::ApplyManager::apply_lock", false, true, false, g_ceph_context),
-      blocked(false),
       open_ops(0),
       max_applied_seq(0),
       com_lock("JOS::ApplyManager::com_lock", false, true, false, g_ceph_context),
-      committing_seq(0), committed_seq(0) {}
+      committing_seq(0), committed_seq(0),
+      replaying(false) {}
     void reset() {
       assert(open_ops == 0);
-      assert(blocked == false);
       max_applied_seq = 0;
       committing_seq = 0;
       committed_seq = 0;
     }
     void add_waiter(uint64_t, Context*);
+    void op_apply_register(uint64_t op);
     uint64_t op_apply_start(uint64_t op);
     void op_apply_finish(uint64_t op);
     bool commit_start();
@@ -104,6 +104,9 @@ protected:
 	Mutex::Locker l(apply_lock);
 	max_applied_seq = fs_op_seq;
       }
+    }
+    void set_replaying(bool b) {
+      replaying = b;
     }
   } apply_manager;
 

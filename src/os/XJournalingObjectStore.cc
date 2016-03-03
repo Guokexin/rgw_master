@@ -53,6 +53,7 @@ int XJournalingObjectStore::get_ack_txns_seq(uint64_t fs_op_seq, list<uint64_t> 
   }
 
   replaying = true;
+  apply_manager.set_replaying(true);
 
   while (1) {
     bufferlist bl;
@@ -165,6 +166,7 @@ int XJournalingObjectStore::journal_replay(uint64_t fs_op_seq)
   }
 
   replaying = false;
+  apply_manager.set_replaying(false);
 
   submit_manager.set_op_seq(op_seq);
 
@@ -179,18 +181,24 @@ int XJournalingObjectStore::journal_replay(uint64_t fs_op_seq)
 
 // ------------------------------------
 
+void XJournalingObjectStore::ApplyManager::op_apply_register(uint64_t op)
+{
+  Mutex::Locker l(apply_lock);
+  dout(10) << "op_apply_register " << op << " unapply_seq size " << unapply_seq.size() << dendl;
+  unapply_seq.insert(op);
+}
+
 uint64_t XJournalingObjectStore::ApplyManager::op_apply_start(uint64_t op)
 {
   Mutex::Locker l(apply_lock);
-  while (blocked) {
-    // note: this only happens during journal replay
-    dout(10) << "op_apply_start blocked, waiting" << dendl;
-    blocked_cond.Wait(apply_lock);
-  }
   dout(10) << "op_apply_start " << op << " open_ops " << open_ops << " -> " << (open_ops+1) << dendl;
-  assert(!blocked);
   assert(op > committed_seq);
   open_ops++;
+  if (replaying) {
+    unapply_seq.insert(op);
+  } else {
+    assert(unapply_seq.count(op));
+  }
   return op;
 }
 
@@ -203,11 +211,7 @@ void XJournalingObjectStore::ApplyManager::op_apply_finish(uint64_t op)
 	   << dendl;
   --open_ops;
   assert(open_ops >= 0);
-
-  // signal a blocked commit_start (only needed during journal replay)
-  if (blocked) {
-    blocked_cond.Signal();
-  }
+  unapply_seq.erase(op);
 
   // there can be multiple applies in flight; track the max value we
   // note.  note that we can't _read_ this value and learn anything
@@ -256,23 +260,26 @@ bool XJournalingObjectStore::ApplyManager::commit_start()
     dout(10) << "commit_start max_applied_seq " << max_applied_seq
 	     << ", open_ops " << open_ops
 	     << dendl;
-    blocked = true;
-    while (open_ops > 0) {
-      dout(10) << "commit_start waiting for " << open_ops << " open ops to drain" << dendl;
-      blocked_cond.Wait(apply_lock);
-    }
-    assert(open_ops == 0);
     dout(10) << "commit_start blocked, all open_ops have completed" << dendl;
     {
       Mutex::Locker l(com_lock);
-      if (max_applied_seq == committed_seq) {
+      if (unapply_seq.size() == 0 ) {
+        dout(10) << __func__ << " _committing_seq from max_applied_seq  "
+                 << _committing_seq << dendl;
+        _committing_seq = max_applied_seq;
+
+      } else {
+        int unapply_min_seq = *(unapply_seq.begin());
+        _committing_seq = unapply_min_seq - 1;
+      }
+
+      if (_committing_seq == committed_seq) {
 	dout(10) << "commit_start nothing to do" << dendl;
-	blocked = false;
 	assert(commit_waiters.empty());
 	goto out;
       }
 
-      _committing_seq = committing_seq = max_applied_seq;
+      committing_seq = _committing_seq;
 
       dout(10) << "commit_start committing " << committing_seq
 	       << ", still blocked" << dendl;
@@ -289,9 +296,6 @@ void XJournalingObjectStore::ApplyManager::commit_started()
 {
   Mutex::Locker l(apply_lock);
   // allow new ops. (underlying fs should now be committing all prior ops)
-  dout(10) << "commit_started committing " << committing_seq << ", unblocking" << dendl;
-  blocked = false;
-  blocked_cond.Signal();
 }
 
 void XJournalingObjectStore::ApplyManager::commit_finish()

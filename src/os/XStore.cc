@@ -2228,6 +2228,7 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
     }
     uint64_t op_num = submit_manager.op_submit_start();
     o->op = op_num;
+    apply_manager.op_apply_register(op_num);
     dout(5) << "build_op " << o << dendl;
 
     if (m_filestore_do_dump)
@@ -3891,7 +3892,6 @@ void XStore::sync_entry()
     fin.swap(sync_waiters);
     lock.Unlock();
     
-    op_tp.pause();
     if (apply_manager.commit_start()) {
       utime_t start = ceph_clock_now(g_ceph_context);
       uint64_t cp = apply_manager.get_committing_seq();
@@ -3910,40 +3910,8 @@ void XStore::sync_entry()
 	assert(0);
       }
 
-      if (backend->can_checkpoint()) {
-	int err = write_op_seq(op_fd, cp);
-	if (err < 0) {
-	  derr << "Error during write_op_seq: " << cpp_strerror(err) << dendl;
-	  assert(0 == "error during write_op_seq");
-	}
-
-	char s[NAME_MAX];
-	snprintf(s, sizeof(s), COMMIT_SNAP_ITEM, (long long unsigned)cp);
-	uint64_t cid = 0;
-	err = backend->create_checkpoint(s, &cid);
-	if (err < 0) {
-	    int err = errno;
-	    derr << "snap create '" << s << "' got error " << err << dendl;
-	    assert(err == 0);
-	}
-
-	snaps.push_back(cp);
-	apply_manager.commit_started();
-	op_tp.unpause();
-
-	if (cid > 0) {
-	  dout(20) << " waiting for checkpoint " << cid << " to complete" << dendl;
-	  err = backend->sync_checkpoint(cid);
-	  if (err < 0) {
-	    derr << "ioctl WAIT_SYNC got " << cpp_strerror(err) << dendl;
-	    assert(0 == "wait_sync got error");
-	  }
-	  dout(20) << " done waiting for checkpoint" << cid << " to complete" << dendl;
-	}
-      } else
       {
 	apply_manager.commit_started();
-	op_tp.unpause();
 
         int err;
         for (int idx = 0; idx < pgmeta_cache.pgmeta_shards; ++idx) {
@@ -3989,28 +3957,12 @@ void XStore::sync_entry()
 
       logger->set(l_os_committing, 0);
 
-      // remove old snaps?
-      if (backend->can_checkpoint()) {
-	char s[NAME_MAX];
-	while (snaps.size() > 2) {
-	  snprintf(s, sizeof(s), COMMIT_SNAP_ITEM, (long long unsigned)snaps.front());
-	  snaps.pop_front();
-	  dout(10) << "removing snap '" << s << "'" << dendl;
-	  int r = backend->destroy_checkpoint(s);
-	  if (r) {
-	    int err = errno;
-	    derr << "unable to destroy snap '" << s << "' got " << cpp_strerror(err) << dendl;
-	  }
-	}
-      }
-
       dout(15) << "sync_entry committed to op_seq " << cp << dendl;
 
       sync_entry_timeo_lock.Lock();
       timer.cancel_event(sync_entry_timeo);
       sync_entry_timeo_lock.Unlock();
     } else {
-      op_tp.unpause();
       uint64_t cp = apply_manager.get_committing_seq();
       int err = write_op_seq(op_fd, cp);
       if (err < 0) {
