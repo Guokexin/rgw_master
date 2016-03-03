@@ -247,7 +247,7 @@ namespace librbd {
     void flush_async_operations(Context *on_finish);
 
     void cancel_async_requests();
-    void apply_metadata_confs();
+    void apply_metadata_confs(bool old_format);
     void aware_metadata(string prefix, map<string, bufferlist> &metadata);
     bool io_limits_intercept(AioRequest *req, bool is_write);
     void process_throttle_req(bool is_write);
