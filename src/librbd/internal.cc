@@ -3452,6 +3452,8 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+    if (ictx->old_format)
+      return -EPERM;
 
     return cls_client::metadata_get(&ictx->md_ctx, ictx->header_oid, key, value);
   }
@@ -3465,6 +3467,8 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+    if (ictx->old_format)
+      return -EPERM;
 
     map<string, bufferlist> data;
     data[key].append(value);
@@ -3486,6 +3490,8 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+    if (ictx->old_format)
+      return -EPERM;
 
     return cls_client::metadata_remove(&ictx->md_ctx, ictx->header_oid, key);
   }
@@ -3499,6 +3505,8 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+    if (ictx->old_format)
+      return -EPERM;
 
     return cls_client::metadata_list(&ictx->md_ctx, ictx->header_oid, start, max, pairs);
   }
