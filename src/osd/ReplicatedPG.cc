@@ -10196,7 +10196,13 @@ void ReplicatedPG::check_local()
       if (r != -ENOENT) {
 	derr << __func__ << " " << p->soid << " exists, but should have been "
 	     << "deleted" << dendl;
-	assert(0 == "erroneously present object");
+        bufferlist bv;
+        int r = pgbackend->objects_get_attr(p->soid, OI_ATTR, &bv);
+        if (r >= 0) {
+          object_info_t oi(bv);
+          dout(10) << __func__ << " oi " << oi << dendl;
+	  assert(0 == "erroneously present object");
+        }
       }
     } else {
       // ignore old(+missing) objects
