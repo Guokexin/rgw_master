@@ -72,6 +72,7 @@ enum {
   l_os_bytes,
   l_os_apply_lat,
   l_os_queue_lat,
+  l_os_wal_op,
   l_os_last,
 };
 

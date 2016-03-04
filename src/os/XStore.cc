@@ -630,6 +630,7 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   plb.add_time_avg(l_os_apply_lat, "apply_latency");
   plb.add_u64_counter(l_os_fdcache, "fdcache");
   plb.add_u64_counter(l_os_fdcache_hit, "fdcache_hit");
+  plb.add_u64(l_os_wal_op, "write_ahead_log");
   plb.add_u64(l_os_committing, "committing");
 
   plb.add_u64_counter(l_os_commit, "commitcycle");
@@ -1821,6 +1822,8 @@ void XStore::_finish_op(OpSequencer *osr)
 
   list<Context*> to_queue;
   o = osr->dequeue(&to_queue);
+
+  // finish op by order
   assert(osr->dequeue_inq() == o);
   
   dout(10) << "_finish_op " << o << *osr << "/" << osr->parent << dendl;
@@ -1860,8 +1863,7 @@ struct C_JournaledAckWritten : public Context {
   XStore *fs;
   list<XStore::Op *> acks;
 
-  C_JournaledAckWritten(XStore *f, list<XStore::Op *> opq): fs(f), acks(opq)
-  {
+  C_JournaledAckWritten(XStore *f, list<XStore::Op *> opq): fs(f) {
     acks.swap(opq);
   }
   void finish(int r) {
@@ -2245,11 +2247,22 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
 
   if (journal && journal->is_writeable()) {
     Op *o = build_op(tls, ondisk, onreadable, onreadable_sync, osd_op, osr);
+
+    //do not continual until wal op finish
+    osr->pending_lock.Lock();
+    while (osr->pending_wal.read() != 0) {
+      dout(5) << "_do_op " << o << " wait " << osr->pending_wal.read() << " finish" << dendl;
+      osr->pending_cond.Wait(osr->pending_lock);
+    }
+    osr->pending_lock.Unlock();
+
     list<ObjectStore::Transaction*> *jtls = new list<ObjectStore::Transaction*>;
     o->wal = get_replay_txns(o->tls, jtls);
     if (o->wal) {
       delete jtls;
       jtls = &(o->tls);
+      osr->pending_wal.inc();
+      logger->inc(l_os_wal_op);
     }
     op_queue_reserve_throttle(o, handle);
     journal->throttle();
@@ -2322,6 +2335,13 @@ void XStore::_journaled_ack_written(list<Op *> acks)
 
     // this should queue in order because the journal does it's completions in order.
     queue_op(osr, o);
+
+    if (o->wal) {
+      osr->pending_lock.Lock();
+      assert(osr->pending_wal.dec() == 0);
+      osr->pending_cond.Signal();
+      osr->pending_lock.Unlock();
+    }
 
     list<Context*> to_queue;
     osr->dequeue_journal(&to_queue);

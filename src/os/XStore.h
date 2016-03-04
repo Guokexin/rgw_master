@@ -316,6 +316,9 @@ public:
     Sequencer *parent;
     Mutex apply_lock;  // for apply mutual exclusion
     int id;
+    Mutex pending_lock;
+    atomic_t pending_wal;
+    Cond pending_cond;
     
     /// get_max_uncompleted
     bool _get_max_uncompleted(
@@ -455,7 +458,8 @@ public:
     OpSequencer(int i)
       : qlock("XStore::OpSequencer::qlock", false, false),
 	parent(0),
-	apply_lock("XStore::OpSequencer::apply_lock", false, false), id(i) {}
+	apply_lock("XStore::OpSequencer::apply_lock", false, false), id(i),
+	pending_lock("XStore::OpSequencer::pending_lock", false, false) {}
     ~OpSequencer() {
       assert(q.empty());
     }
