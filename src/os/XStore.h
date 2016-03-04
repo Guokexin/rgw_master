@@ -262,6 +262,8 @@ public:
   struct Op;
   class OpSequencer;
   list<Op*> jwa_queue;
+  uint64_t *jwa_seq;
+  uint64_t m_xstore_max_commit_entries;
 
   void _jwa_entry();
   struct JournaledWrittenAckThread : public Thread {

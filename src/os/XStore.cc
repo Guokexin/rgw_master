@@ -538,7 +538,9 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   timer(g_ceph_context, sync_entry_timeo_lock),
   stop(false), sync_thread(this),
   jwa_lock("XStore::jwa_lock"),
-  jwa_stop(false), jwa_thread(this),
+  jwa_stop(false),
+  m_xstore_max_commit_entries(g_conf->xstore_max_commit_entries),
+  jwa_thread(this),
   fdcache(g_ceph_context),
   default_osr("default"),
   next_osr_id(0),
@@ -642,6 +644,8 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   g_ceph_context->_conf->add_observer(this);
 
   superblock.compat_features = get_fs_initial_compat_set();
+
+  jwa_seq = new uint64_t[m_xstore_max_commit_entries];
 }
 
 XStore::~XStore()
@@ -668,6 +672,9 @@ XStore::~XStore()
   if (m_filestore_do_dump) {
     dump_stop();
   }
+
+  delete jwa_seq;
+  jwa_seq = NULL;
 }
 
 void XStore::collect_metadata(map<string,string> *pm)
@@ -1853,7 +1860,10 @@ struct C_JournaledAckWritten : public Context {
   XStore *fs;
   list<XStore::Op *> acks;
 
-  C_JournaledAckWritten(XStore *f, list<XStore::Op *> acks): fs(f), acks(acks) {}
+  C_JournaledAckWritten(XStore *f, list<XStore::Op *> opq): fs(f), acks(opq)
+  {
+    acks.swap(opq);
+  }
   void finish(int r) {
     fs->_journaled_ack_written(acks);
   }
@@ -1873,17 +1883,41 @@ void XStore::_jwa_entry()
       dout(20) << __func__ << " wake" << dendl;
     } else {
       list<Op*> jwa_opq;
-      list<uint64_t> jwa_seq;
-      for (list<Op*>::iterator it = jwa_queue.begin();
-           it != jwa_queue.end();
-           ++it) {
-        jwa_seq.push_back((*it)->op);
+      __u32 index = 0;
+      if (jwa_queue.size() <= m_xstore_max_commit_entries) {
+        for (list<Op*>::iterator it = jwa_queue.begin();
+             it != jwa_queue.end();
+             ++it) {
+          jwa_seq[index++] = ((*it)->op);
+        }
+        assert(index = jwa_queue.size());
+        jwa_opq.swap(jwa_queue);
+      } else {
+        list<Op*>::iterator it = jwa_queue.begin();
+        while (index < m_xstore_max_commit_entries) {
+          jwa_seq[index++] = ((*it)->op);
+          ++it;
+        }
+        jwa_opq.splice(jwa_opq.end(), jwa_queue, jwa_queue.begin(), it);
+        assert(index == m_xstore_max_commit_entries);
       }
-      jwa_opq.swap(jwa_queue);
       jwa_lock.Unlock();
 
       bufferlist bl;
-      ::encode(jwa_seq, bl);
+#if defined(CEPH_LITTLE_ENDIAN)
+      uint32_t encode_size = sizeof(uint64_t) * index + sizeof(__u32);
+      bufferptr ptr(encode_size);
+      ptr.copy_in(0, sizeof(__u32), (char*)&index);
+      ptr.copy_in(sizeof(__u32), encode_size - sizeof(__u32), (char*)jwa_seq);
+      bl.push_back(ptr);
+#else
+      list<uint64_t> seqs;
+      for (int i = 0; i < index; i++) {
+        seqs.push_back(jwa_seq[i]);
+      }
+      ::encode(seqs, bl);
+#endif
+
       Context *ondisk = new C_JournaledAckWritten(this, jwa_opq);
       Op *o = build_op(tls, NULL,
                        NULL, NULL, TrackedOpRef(), NULL);
@@ -1892,8 +1926,12 @@ void XStore::_jwa_entry()
       uint64_t op_num = submit_manager.op_submit_start();
       o->op = op_num;
       o->osr = NULL;
-      
-      dout(20) << __func__ << " seq " << op_num << " ack seq " << jwa_seq << dendl;
+
+      ostringstream oss;
+      for (uint32_t i = 0; i < index; i++) {
+        oss << jwa_seq[i] << " ";
+      }
+      dout(20) << __func__ << " seq " << op_num << " ack seq " << oss.str() << dendl;
 
       // FIXME osr->queue_journal(o->op);
       if (journal && journal->is_writeable()) {
