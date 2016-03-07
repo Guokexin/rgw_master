@@ -122,24 +122,43 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
   buffer::error_code::error_code(int error) :
     buffer::malformed_input(cpp_strerror(error).c_str()), code(error) {}
 
+#define CRC_CACHE_THRESHOLD (2 * CEPH_PAGE_SIZE)
+
   class buffer::raw {
   public:
     char *data;
     unsigned len;
     atomic_t nref;
 
-    mutable Mutex crc_lock;
-    map<pair<size_t, size_t>, pair<uint32_t, uint32_t> > crc_map;
+    mutable Spinlock *crc_lock;
+    map<pair<size_t, size_t>, pair<uint32_t, uint32_t> > *crc_map;
 
     raw(unsigned l)
       : data(NULL), len(l), nref(0),
-	crc_lock("buffer::raw::crc_lock", false, false)
-    { }
+        crc_lock(NULL), crc_map(NULL) {
+      if (l > CRC_CACHE_THRESHOLD) {
+        crc_lock = new Spinlock();
+        crc_map = new map<pair<size_t, size_t>, pair<uint32_t, uint32_t> >;
+      }
+    }
+
     raw(char *c, unsigned l)
       : data(c), len(l), nref(0),
-	crc_lock("buffer::raw::crc_lock", false, false)
-    { }
-    virtual ~raw() {}
+        crc_lock(NULL), crc_map(NULL) {
+      if (l > CRC_CACHE_THRESHOLD) {
+        crc_lock = new Spinlock();
+        crc_map = new map<pair<size_t, size_t>, pair<uint32_t, uint32_t> >;
+      }
+    }
+
+    virtual ~raw() {
+      if (crc_lock) {
+        delete crc_lock;
+      }
+      if (crc_map) {
+        delete crc_map;
+      }
+    }
 
     // no copying.
     raw(const raw &other);
@@ -174,22 +193,28 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     }
     bool get_crc(const pair<size_t, size_t> &fromto,
 		 pair<uint32_t, uint32_t> *crc) const {
-      Mutex::Locker l(crc_lock);
+      if (!crc_lock)
+        return false;
+      Spinlock::Locker l(*crc_lock);
       map<pair<size_t, size_t>, pair<uint32_t, uint32_t> >::const_iterator i =
-	crc_map.find(fromto);
-      if (i == crc_map.end())
+	crc_map->find(fromto);
+      if (i == crc_map->end())
 	return false;
       *crc = i->second;
       return true;
     }
     void set_crc(const pair<size_t, size_t> &fromto,
 		 const pair<uint32_t, uint32_t> &crc) {
-      Mutex::Locker l(crc_lock);
-      crc_map[fromto] = crc;
+      if (!crc_lock)
+        return;
+      Spinlock::Locker l(*crc_lock);
+      (*crc_map)[fromto] = crc;
     }
     void invalidate_crc() {
-      Mutex::Locker l(crc_lock);
-      crc_map.clear();
+      if (!crc_lock)
+        return;
+      Spinlock::Locker l(*crc_lock);
+      crc_map->clear();
     }
   };
 
