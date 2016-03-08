@@ -42,7 +42,6 @@ using namespace std;
 #include "KeyValueDB.h"
 #include "SequencerPosition.h"
 #include "FDCache.h"
-#include "WBThrottle.h"
 
 #include "include/uuid.h"
 
@@ -472,7 +471,6 @@ public:
   friend ostream& operator<<(ostream& out, const OpSequencer& s);
 
   FDCache fdcache;
-  vector<WBThrottle *> wbthrottles;
 
   Sequencer default_osr;
   int next_osr_id;
@@ -482,7 +480,6 @@ public:
   Mutex op_throttle_lock;
   const int ondisk_finisher_num;
   const int apply_finisher_num;
-  const int wbthrottle_num;
   vector<Finisher*> ondisk_finishers;
   vector<Finisher*> apply_finishers;
 

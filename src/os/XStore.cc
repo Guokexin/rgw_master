@@ -474,7 +474,6 @@ int XStore::lfn_unlink(coll_t cid, const ghobject_t& o,
       if (r < 0) {
 	r = -errno;
 	if (r == -ENOENT) {
-	  wbthrottles[osr % wbthrottle_num]->clear_object(o); // should be only non-cache ref
 	  fdcache.clear(o);
 	} else {
 	  assert(!m_filestore_fail_eio || r != -EIO);
@@ -497,7 +496,6 @@ int XStore::lfn_unlink(coll_t cid, const ghobject_t& o,
       if (g_conf->filestore_debug_inject_read_err) {
 	debug_obj_on_delete(o);
       }
-      wbthrottles[osr % wbthrottle_num]->clear_object(o); // should be only non-cache ref
       fdcache.clear(o);
       if (o.is_pgmeta()) {
         pgmeta_cache.erase_pgmeta_key(o);
@@ -548,7 +546,6 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   op_throttle_lock("XStore::op_throttle_lock"),
   ondisk_finisher_num(g_conf->filestore_ondisk_finisher_threads),
   apply_finisher_num(g_conf->filestore_apply_finisher_threads),
-  wbthrottle_num(g_conf->filestore_wbthrottle_num),
   op_tp(g_ceph_context, "XStore::op_tp", g_conf->filestore_op_threads, "filestore_op_threads"),
   op_wq(this, g_conf->filestore_op_thread_timeout,
 	g_conf->filestore_op_thread_suicide_timeout, &op_tp),
@@ -590,11 +587,6 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
     oss << "filestore-apply-" << i;
     Finisher *f = new Finisher(g_ceph_context, oss.str());
     apply_finishers.push_back(f);
-  }
-  for (int i = 0; i < wbthrottle_num; ++i) {
-    ostringstream oss;
-    oss << i;
-    wbthrottles.push_back(new WBThrottle(g_ceph_context, oss.str()));
   }
   ostringstream oss;
   oss << basedir << "/current";
@@ -656,10 +648,6 @@ XStore::~XStore()
     *it = NULL;
   }
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
-    delete *it;
-    *it = NULL;
-  }
-  for (vector<WBThrottle*>::iterator it = wbthrottles.begin(); it != wbthrottles.end(); ++it) {
     delete *it;
     *it = NULL;
   }
@@ -736,9 +724,6 @@ void XStore::create_backend(long f_type)
   switch (f_type) {
 #if defined(__linux__)
   case BTRFS_SUPER_MAGIC:
-    for (int i = 0; i < wbthrottle_num; ++i) {
-      wbthrottles[i]->set_fs(WBThrottle::BTRFS);
-    }
     break;
 
   case XFS_SUPER_MAGIC:
@@ -1510,9 +1495,6 @@ int XStore::mount()
     }
   }
 
-  for (int i = 0; i < wbthrottle_num; ++i) {
-    wbthrottles[i]->start();
-  }
   sync_thread.create();
   jwa_thread.create();
 
@@ -1533,10 +1515,6 @@ int XStore::mount()
       lock.Unlock();
       sync_thread.join();
       jwa_thread.join();
-
-      for (int i = 0; i < wbthrottle_num; ++i) {
-        wbthrottles[i]->stop();
-      }
 
       goto close_current_fd;
     }
@@ -1608,9 +1586,6 @@ int XStore::umount()
   jwa_lock.Unlock();
   jwa_thread.join();
 
-  for (int i = 0; i < wbthrottle_num; ++i) {
-    wbthrottles[i]->stop();
-  }
   op_tp.stop();
 
   journal_stop();
@@ -1765,7 +1740,6 @@ void XStore::op_queue_release_throttle(Op *o)
 
 void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 {  
-  wbthrottles[osr->id % wbthrottle_num]->throttle();
   // inject a stall?
   if (g_conf->filestore_inject_stall) {
     int orig = g_conf->filestore_inject_stall;
@@ -3491,11 +3465,6 @@ int XStore::_write(coll_t cid, const ghobject_t& oid,
     assert(rc >= 0);
   }
 
-  // flush?
-  if (!replaying &&
-      g_conf->filestore_wbthrottle_enable)
-    wbthrottles[osr % wbthrottle_num]->queue_wb(fd, oid, offset, len,
-			  fadvise_flags & CEPH_OSD_OP_FLAG_FADVISE_DONTNEED);
   lfn_close(fd);
 
  out:
@@ -4009,9 +3978,6 @@ void XStore::sync_entry()
       logger->tinc(l_os_commit_len, dur);
 
       apply_manager.commit_finish();
-      for (int i = 0; i < wbthrottle_num; ++i) {
-        wbthrottles[i]->clear();
-      }
 
       logger->set(l_os_committing, 0);
 
