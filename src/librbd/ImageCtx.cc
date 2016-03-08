@@ -67,6 +67,7 @@ public:
       image_watcher(NULL),
       refresh_seq(0),
       last_refresh(0),
+      metadata_updated(false),
       owner_lock("librbd::ImageCtx::owner_lock"),
       md_lock("librbd::ImageCtx::md_lock"),
       cache_lock("librbd::ImageCtx::cache_lock"),

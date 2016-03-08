@@ -73,6 +73,7 @@ namespace librbd {
     ImageWatcher *image_watcher;
     int refresh_seq;    ///< sequence for refresh requests
     int last_refresh;   ///< last completed refresh
+    bool metadata_updated;
 
     /**
      * Lock ordering:
@@ -93,7 +94,7 @@ namespace librbd {
     Mutex cache_lock; // used as client_lock for the ObjectCacher
     RWLock snap_lock; // protects snapshot-related member variables, features, and flags
     RWLock parent_lock; // protects parent_md and parent
-    Mutex refresh_lock; // protects refresh_seq and last_refresh
+    Mutex refresh_lock; // protects refresh_seq, last_refresh and metadata_updated
     RWLock object_map_lock; // protects object map updates and object_map itself
     Mutex async_ops_lock; // protects async_ops and async_requests
     Mutex copyup_list_lock; // protects copyup_waiting_list

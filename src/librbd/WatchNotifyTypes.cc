@@ -142,13 +142,16 @@ void RequestLockPayload::dump(Formatter *f) const {
 
 void HeaderUpdatePayload::encode(bufferlist &bl) const {
   ::encode(static_cast<uint32_t>(NOTIFY_OP_HEADER_UPDATE), bl);
+  ::encode(metadata_updated, bl);
 }
 
 void HeaderUpdatePayload::decode(__u8 version, bufferlist::iterator &iter) {
+  ::decode(metadata_updated, iter);
 }
 
 void HeaderUpdatePayload::dump(Formatter *f) const {
   f->dump_string("notify_op", stringify(NOTIFY_OP_HEADER_UPDATE));
+  f->dump_bool("metadata_updated", metadata_updated);
 }
 
 void AsyncProgressPayload::encode(bufferlist &bl) const {
