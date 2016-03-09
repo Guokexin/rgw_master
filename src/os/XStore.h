@@ -681,6 +681,16 @@ public:
     bufferlist& bl,
     uint32_t op_flags = 0,
     bool allow_eio = false);
+  int direct_read(
+    int fd,
+    bufferptr &bptr,
+    off_t offset,
+    size_t len);
+  int direct_write(
+    int fd,
+    const bufferlist &bl,
+    off_t offset,
+    size_t len);
   int fiemap(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, bufferlist& bl);
 
   int _touch(coll_t cid, const ghobject_t& oid);
@@ -856,6 +866,7 @@ private:
   bool m_filestore_sloppy_crc;
   uint64_t m_filestore_max_alloc_hint_size;
   long m_fs_type;
+  size_t m_block_size;
 
   //Determined xattr handling based on fs type
   void set_xattr_limits_via_conf();

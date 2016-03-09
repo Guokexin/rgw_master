@@ -572,6 +572,7 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   m_filestore_sloppy_crc(g_conf->filestore_sloppy_crc),
   m_filestore_max_alloc_hint_size(g_conf->filestore_max_alloc_hint_size),
   m_fs_type(0),
+  m_block_size(CEPH_PAGE_SIZE),
   m_filestore_max_inline_xattr_size(0),
   m_filestore_max_inline_xattrs(0)
 {
@@ -3227,6 +3228,115 @@ int XStore::stat(
   }
 }
 
+int XStore::direct_read(
+  int fd,
+  bufferptr &bptr,
+  off_t offset,
+  size_t len)
+{
+  uint64_t front_extra = offset % m_block_size;
+  uint64_t r_off = offset - front_extra;
+  uint64_t r_len = ROUND_UP_TO(len + front_extra, m_block_size);
+
+  bptr = buffer::create_page_aligned(r_len);
+  int got = safe_pread(fd, bptr.c_str(), r_len, r_off);
+  dout(15) << "XStore::direct_read(" << fd << ") " << offset << "~" << len
+           << " " << r_off << "~" << r_len << " got " << got << dendl;
+  if (got < 0) {
+    return got;
+  }
+  if ((uint64_t)got > front_extra) {
+    if (got - front_extra >= len) {
+      got = len;
+    } else {
+      got = got - front_extra;
+    }
+    bptr.set_offset(front_extra);
+  } else {
+    got = 0;
+  }
+  bptr.set_length(got);   // properly size the buffer
+  return got;
+}
+
+int XStore::direct_write(
+  int fd,
+  const bufferlist &bl,
+  off_t offset,
+  size_t len)
+{
+  assert(bl.length() == len);
+  int got = 0;
+  uint64_t front_extra = offset % m_block_size;
+  uint64_t front_off = offset - front_extra;
+  uint64_t w_off = front_off;
+  uint64_t footer_off = (offset + len);
+  uint64_t footer_extra = 0;
+  if (footer_off % m_block_size)
+    footer_extra = m_block_size - (offset + len) % m_block_size;
+  uint64_t w_len = ROUND_UP_TO(len + front_extra, m_block_size);
+
+  dout(15) << "XStore::direct_write(" << fd << ") front " << front_off << "~" << front_extra
+           << " footer " << footer_off << "~" << footer_extra
+           << " whole " << w_off << "~" << w_len << dendl;
+
+  if (offset % m_block_size != 0 ||
+      len % m_block_size != 0 ||
+      !bl.is_page_aligned() ||
+      !bl.is_n_page_sized() ||
+      bl.buffers().size() != 1) {
+    bufferptr write_ptr = buffer::create_page_aligned(w_len);
+    memset(write_ptr.c_str(), 0, w_len);
+    if (front_extra) {
+      bufferptr ptr;
+      int got = direct_read(fd, ptr, front_off, front_extra);
+      if (got < 0) {
+        dout(10) << "XStore::direct_write(" << fd << ") pread error: " << cpp_strerror(got) << dendl;
+        assert(!m_filestore_fail_eio || got != -EIO);
+        return got;
+      }
+      write_ptr.copy_in(0, ptr.length(), ptr.c_str());
+    }
+    uint64_t off = front_extra;
+    for (list<bufferptr>::const_iterator it = bl.buffers().begin();
+         it != bl.buffers().end();
+         ++it) {
+      write_ptr.copy_in(off, it->length(), it->c_str());
+      off += it->length();
+    }
+    uint64_t f_len = 0;
+    if (footer_extra) {
+      bufferptr ptr;
+      int got = direct_read(fd, ptr, footer_off, footer_extra);
+      if (got < 0) {
+        dout(10) << "XStore::direct_write(" << fd << ") pread error: " << cpp_strerror(got) << dendl;
+        assert(!m_filestore_fail_eio || got != -EIO);
+        return got;
+      }
+      write_ptr.copy_in(front_extra + bl.length(), ptr.length(), ptr.c_str());
+      if ((uint64_t)got < footer_extra) {
+        f_len = footer_off + got;
+      }
+    }
+    got = safe_pwrite(fd, write_ptr.c_str(), w_len, w_off);
+    dout(15) << "XStore::direct_write(" << fd << ") " << w_off << "~" << front_extra
+             << " " << footer_off  << "~" << footer_extra << " f_len " << f_len << dendl;
+    //FIXME
+    if (f_len) {
+      ftruncate(fd, f_len);
+      dout(15) << "XStore::ftruncate(" << fd << ") to " << f_len << dendl;
+    }
+  } else {
+    assert(w_off == (uint64_t)offset && w_len == len);
+    got = safe_pwrite(fd, bl.buffers().front().c_str(), w_len, w_off);
+  }
+
+  if (got < 0) {
+    return got;
+  }
+  return 0;
+}
+
 int XStore::read(
   coll_t cid,
   const ghobject_t& oid,
@@ -3263,17 +3373,15 @@ int XStore::read(
   if (op_flags & CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL)
     posix_fadvise(**fd, offset, len, POSIX_FADV_SEQUENTIAL);
 #endif
-
-  bufferptr bptr(len);  // prealloc space for entire read
-  got = safe_pread(**fd, bptr.c_str(), len, offset);
+  bufferptr ptr;
+  got = direct_read(**fd, ptr, offset, len);
   if (got < 0) {
     dout(10) << "XStore::read(" << cid << "/" << oid << ") pread error: " << cpp_strerror(got) << dendl;
     lfn_close(fd);
     assert(allow_eio || !m_filestore_fail_eio || got != -EIO);
     return got;
   }
-  bptr.set_length(got);   // properly size the buffer
-  bl.push_back(bptr);   // put it in the target bufferlist
+  bl.push_back(ptr);
 
 #ifdef HAVE_POSIX_FADVISE
   if (op_flags & CEPH_OSD_OP_FLAG_FADVISE_DONTNEED)
@@ -3429,8 +3537,6 @@ int XStore::_write(coll_t cid, const ghobject_t& oid,
   dout(15) << "write " << cid << "/" << oid << " " << offset << "~" << len << dendl;
   int r;
 
-  int64_t actual;
-
   FDRef fd;
   r = lfn_open(cid, oid, true, &fd);
   if (r < 0) {
@@ -3440,23 +3546,8 @@ int XStore::_write(coll_t cid, const ghobject_t& oid,
     goto out;
   }
     
-  // seek
-  actual = ::lseek64(**fd, offset, SEEK_SET);
-  if (actual < 0) {
-    r = -errno;
-    dout(0) << "write lseek64 to " << offset << " failed: " << cpp_strerror(r) << dendl;
-    lfn_close(fd);
-    goto out;
-  }
-  if (actual != (int64_t)offset) {
-    dout(0) << "write lseek64 to " << offset << " gave bad offset " << actual << dendl;
-    r = -EIO;
-    lfn_close(fd);
-    goto out;
-  }
-
   // write
-  r = bl.write_fd(**fd);
+  r = direct_write(**fd, bl, offset, len);
   if (r == 0)
     r = bl.length();
 
@@ -3481,13 +3572,18 @@ int XStore::_zero(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len
 # if !defined(DARWIN) && !defined(__FreeBSD__)
   // first try to punch a hole.
   FDRef fd;
+  uint64_t front_extra = offset % m_block_size;
+  uint64_t w_off = offset - front_extra;
+  uint64_t w_len = ROUND_UP_TO(len + front_extra, m_block_size);
+  dout(15) << "XStore::zero( " << cid << "/" << oid << " " << w_off << "~" << w_len << dendl;
+
   ret = lfn_open(cid, oid, false, &fd);
   if (ret < 0) {
     goto out;
   }
 
   // first try fallocate
-  ret = fallocate(**fd, FALLOC_FL_PUNCH_HOLE, offset, len);
+  ret = fallocate(**fd, FALLOC_FL_PUNCH_HOLE, w_off, w_len);
   if (ret < 0)
     ret = -errno;
   lfn_close(fd);
@@ -3633,7 +3729,6 @@ int XStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t le
     return r;
 
   int buflen = 4096*32;
-  char buf[buflen];
   struct fiemap_extent *extent = &fiemap->fm_extents[0];
 
   /* start where we were asked to start */
@@ -3665,61 +3760,45 @@ int XStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t le
     if (extent->fe_logical + extent->fe_length > srcoff + len)
       extent->fe_length = srcoff + len - extent->fe_logical;
 
-    int64_t actual;
+    loff_t src_pos = extent->fe_logical;
+    loff_t end_pos = src_pos + extent->fe_length;
+    loff_t dst_pos = extent->fe_logical - srcoff + dstoff;
 
-    actual = ::lseek64(from, extent->fe_logical, SEEK_SET);
-    if (actual != (int64_t)extent->fe_logical) {
-      r = errno;
-      derr << "lseek64 to " << srcoff << " got " << cpp_strerror(r) << dendl;
-      return r;
-    }
-    actual = ::lseek64(to, extent->fe_logical - srcoff + dstoff, SEEK_SET);
-    if (actual != (int64_t)(extent->fe_logical - srcoff + dstoff)) {
-      r = errno;
-      derr << "lseek64 to " << dstoff << " got " << cpp_strerror(r) << dendl;
-      return r;
-    }
-
-    loff_t pos = 0;
-    loff_t end = extent->fe_length;
-    while (pos < end) {
-      int l = MIN(end-pos, buflen);
-      r = ::read(from, buf, l);
-      dout(25) << "  read from " << pos << "~" << l << " got " << r << dendl;
+    bufferptr buf;
+    while (src_pos < end_pos) {
+      int l = MIN(end_pos - src_pos, buflen);
+      r = direct_read(from, buf, src_pos, l);
+      dout(25) << "  read from " << src_pos << "~" << l << " got " << r << dendl;
       if (r < 0) {
         if (errno == EINTR) {
           continue;
         } else {
           r = -errno;
-          derr << __func__ << ": read error at " << pos << "~" << len
+          derr << __func__ << ": read error at " << src_pos << "~" << len
               << ", " << cpp_strerror(r) << dendl;
           break;
         }
       }
       if (r == 0) {
         r = -ERANGE;
-        derr << __func__ << " got short read result at " << pos
+        derr << __func__ << " got short read result at " << src_pos
              << " of fd " << from << " len " << len << dendl;
         break;
       }
-      int op = 0;
-      while (op < r) {
-        int r2 = safe_write(to, buf+op, r-op);
-        dout(25) << " write to " << to << " len " << (r-op)
+      bufferlist bl;
+      bl.push_back(buf);
+      int r2 = direct_write(to, bl, dst_pos, r);
+      dout(25) << " write to " << to << " len " << bl.length()
                  << " got " << r2 << dendl;
-        if (r2 < 0) {
-          r = r2;
-          derr << __func__ << ": write error at " << pos << "~"
-               << r-op << ", " << cpp_strerror(r) << dendl;
-          break;
-        }
-        op += (r-op);
-      }
-      if (r < 0)
+      if (r2 < 0) {
+        derr << "XStore::_do_copy_range: write error at " << dst_pos << "~"
+             << bl.length() << ", " << cpp_strerror(r2) << dendl;
         goto out;
-      pos += r;
+      }
+      src_pos += r;
+      dst_pos += r;
     }
-    written += end;
+    written += extent->fe_length;
     i++;
     extent++;
   }
@@ -3756,28 +3835,14 @@ int XStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint
 {
   dout(20) << "_do_copy_range " << srcoff << "~" << len << " to " << dstoff << dendl;
   int r = 0;
-  int64_t actual;
-
-  actual = ::lseek64(from, srcoff, SEEK_SET);
-  if (actual != (int64_t)srcoff) {
-    r = errno;
-    derr << "lseek64 to " << srcoff << " got " << cpp_strerror(r) << dendl;
-    return r;
-  }
-  actual = ::lseek64(to, dstoff, SEEK_SET);
-  if (actual != (int64_t)dstoff) {
-    r = errno;
-    derr << "lseek64 to " << dstoff << " got " << cpp_strerror(r) << dendl;
-    return r;
-  }
 
   loff_t pos = srcoff;
   loff_t end = srcoff + len;
-  int buflen = 4096*32;
-  char buf[buflen];
+  int buflen = 4096 * 128;
+  bufferptr buf;
   while (pos < end) {
     int l = MIN(end-pos, buflen);
-    r = ::read(from, buf, l);
+    r = direct_read(from, buf, pos, l);
     dout(25) << "  read from " << pos << "~" << l << " got " << r << dendl;
     if (r < 0) {
       if (errno == EINTR) {
@@ -3796,23 +3861,19 @@ int XStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint
 	      << " of fd " << from << " len " << len << dendl;
       break;
     }
-    int op = 0;
-    while (op < r) {
-      int r2 = safe_write(to, buf+op, r-op);
-      dout(25) << " write to " << to << " len " << (r-op)
+    bufferlist bl;
+    bl.push_back(buf);
+    int r2 = direct_write(to, bl, dstoff, r);
+    dout(25) << " write to " << to << " len " << bl.length()
 	       << " got " << r2 << dendl;
-      if (r2 < 0) {
-	r = r2;
-	derr << "XStore::_do_copy_range: write error at " << pos << "~"
-	     << r-op << ", " << cpp_strerror(r) << dendl;
-
-	break;
-      }
-      op += (r-op);
-    }
-    if (r < 0)
+    if (r2 < 0) {
+      r = r2;
+      derr << "XStore::_do_copy_range: write error at " << dstoff << "~"
+           << bl.length() << ", " << cpp_strerror(r2) << dendl;
       break;
+    }
     pos += r;
+    dstoff += r;
   }
   if (r >= 0 && m_filestore_sloppy_crc) {
     int rc = backend->_crc_update_clone_range(from, to, srcoff, len, dstoff);
