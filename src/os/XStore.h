@@ -741,6 +741,7 @@ public:
 
   int snapshot(const string& name);
 
+  int object_exist_in_meta(coll_t cid, const ghobject_t& oid, bufferptr &bp);
   // attrs
   int getattr(coll_t cid, const ghobject_t& oid, const char *name, bufferptr &bp);
   int getattrs(coll_t cid, const ghobject_t& oid, map<string,bufferptr>& aset);

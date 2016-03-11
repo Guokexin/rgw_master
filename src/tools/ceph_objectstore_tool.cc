@@ -2060,6 +2060,19 @@ int do_set_bytes(ObjectStore *store, coll_t coll, ghobject_t &ghobj, int fd)
     // XXX: Should we apply_transaction() every once in a while for very large files
   } while(true);
 
+  bufferptr bp;
+  bufferlist bl;
+  int r = store->getattr(coll, ghobj, OI_ATTR, bp);
+  if (r < 0) {
+    cerr << "getattr: " << cpp_strerror(-r) << std::endl;
+    return r;
+  }
+  bl.push_back(bp);
+  object_info_t oi(bl);
+  oi.size = offset;
+  bl.clear();
+  ::encode(oi, bl);
+  t->setattr(coll, ghobj, OI_ATTR, bl);
   store->apply_transaction(*t);
   return 0;
 }

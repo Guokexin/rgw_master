@@ -206,21 +206,51 @@ int XStore::lfn_truncate(coll_t cid, const ghobject_t& oid, off_t length)
 
 int XStore::lfn_stat(const coll_t& cid, const ghobject_t& oid, struct stat *buf)
 {
-  IndexedPath path;
-  Index index;
-  int r = get_index(cid, &index);
-  if (r < 0)
-    return r;
+  int r = 0;
+  {
+    IndexedPath path;
+    Index index;
+    r = get_index(cid, &index);
+    if (r < 0)
+      return r;
 
-  assert(NULL != index.index);
-  RWLock::RLocker l((index.index)->access_lock);
+    assert(NULL != index.index);
+    RWLock::RLocker l((index.index)->access_lock);
 
-  r = lfn_find(oid, index, &path);
-  if (r < 0)
-    return r;
-  r = ::stat(path->path(), buf);
-  if (r < 0)
-    r = -errno;
+    r = lfn_find(oid, index, &path);
+    if (r < 0)
+      return r;
+    r = ::stat(path->path(), buf);
+    if (r < 0) {
+      r = -errno;
+      return r;
+    }
+  }
+
+#if 0
+  /// FIXME, maybe we sould use meta info(object_info_t)
+  if (!cid.is_meta() &&
+      oid.hobj.oid.name.length()) {
+    bufferptr ptr;
+    int r2 = object_exist_in_meta(cid, oid, ptr);
+    if (r2 < 0) {
+      dout(5) << "lfn_stat " << cid << "/" << oid << " exist but meta not exist r=" << r2 << dendl;
+      return r2;
+    }
+    if (ptr.length() &&
+        oid.generation == ghobject_t::NO_GEN &&
+        oid.shard_id == shard_id_t::NO_SHARD) {
+      bufferlist bl;
+      bl.push_back(ptr);
+      object_info_t oi(bl);
+      if (oi.size != (uint64_t)buf->st_size) {
+        dout(5) << "lfn_stat " << cid << "/" << oid << " " << buf->st_size << "->" << oi.size << dendl;
+        buf->st_size = oi.size;
+        buf->st_blocks = (buf->st_size + buf->st_blksize - 1) / buf->st_blksize;
+      }
+    }
+  }
+#endif
   return r;
 }
 
@@ -4351,6 +4381,12 @@ bool XStore::debug_mdata_eio(const ghobject_t &oid) {
 
 
 // objects
+int XStore::object_exist_in_meta(coll_t cid, const ghobject_t& oid, bufferptr &bp)
+{
+  int r = getattr(cid, oid, OI_ATTR, bp);
+  dout(15) << "object_exist_in_meta " << cid << "/" << oid << " r=" << r << dendl;
+  return r;
+}
 
 int XStore::getattr(coll_t cid, const ghobject_t& oid, const char *name, bufferptr &bp)
 {
