@@ -3260,18 +3260,20 @@ int XStore::stat(
 }
 
 int XStore::direct_read(
-  int fd,
+  FDRef fd,
+  const ghobject_t& oid,
   bufferptr &bptr,
   off_t offset,
-  size_t len)
+  size_t len,
+  uint32_t fadvise_flags)
 {
   uint64_t front_extra = offset % m_block_size;
   uint64_t r_off = offset - front_extra;
   uint64_t r_len = ROUND_UP_TO(len + front_extra, m_block_size);
 
   bptr = buffer::create_page_aligned(r_len);
-  int got = safe_pread(fd, bptr.c_str(), r_len, r_off);
-  dout(15) << "XStore::direct_read(" << fd << ") " << offset << "~" << len
+  int got = safe_pread(**fd, bptr.c_str(), r_len, r_off);
+  dout(15) << "XStore::direct_read(" << **fd << ") " << offset << "~" << len
            << " " << r_off << "~" << r_len << " got " << got << dendl;
   if (got < 0) {
     return got;
@@ -3291,10 +3293,12 @@ int XStore::direct_read(
 }
 
 int XStore::direct_write(
-  int fd,
+  FDRef fd,
+  const ghobject_t& oid,
   const bufferlist &bl,
   off_t offset,
-  size_t len)
+  size_t len,
+  uint32_t fadvise_flags)
 {
   assert(bl.length() == len);
   int got = 0;
@@ -3307,7 +3311,7 @@ int XStore::direct_write(
     footer_extra = m_block_size - (offset + len) % m_block_size;
   uint64_t w_len = ROUND_UP_TO(len + front_extra, m_block_size);
 
-  dout(15) << "XStore::direct_write(" << fd << ") front " << front_off << "~" << front_extra
+  dout(15) << "XStore::direct_write(" << **fd << ") front " << front_off << "~" << front_extra
            << " footer " << footer_off << "~" << footer_extra
            << " whole " << w_off << "~" << w_len << dendl;
 
@@ -3320,9 +3324,9 @@ int XStore::direct_write(
     memset(write_ptr.c_str(), 0, w_len);
     if (front_extra) {
       bufferptr ptr;
-      int got = direct_read(fd, ptr, front_off, front_extra);
+      int got = direct_read(fd, oid, ptr, front_off, front_extra);
       if (got < 0) {
-        dout(10) << "XStore::direct_write(" << fd << ") pread error: " << cpp_strerror(got) << dendl;
+        dout(10) << "XStore::direct_write(" << **fd << ") pread error: " << cpp_strerror(got) << dendl;
         assert(!m_filestore_fail_eio || got != -EIO);
         return got;
       }
@@ -3338,9 +3342,9 @@ int XStore::direct_write(
     uint64_t f_len = 0;
     if (footer_extra) {
       bufferptr ptr;
-      int got = direct_read(fd, ptr, footer_off, footer_extra);
+      int got = direct_read(fd, oid, ptr, footer_off, footer_extra);
       if (got < 0) {
-        dout(10) << "XStore::direct_write(" << fd << ") pread error: " << cpp_strerror(got) << dendl;
+        dout(10) << "XStore::direct_write(" << **fd << ") pread error: " << cpp_strerror(got) << dendl;
         assert(!m_filestore_fail_eio || got != -EIO);
         return got;
       }
@@ -3349,17 +3353,17 @@ int XStore::direct_write(
         f_len = footer_off + got;
       }
     }
-    got = safe_pwrite(fd, write_ptr.c_str(), w_len, w_off);
-    dout(15) << "XStore::direct_write(" << fd << ") " << w_off << "~" << front_extra
+    got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
+    dout(15) << "XStore::direct_write(" << **fd << ") " << w_off << "~" << front_extra
              << " " << footer_off  << "~" << footer_extra << " f_len " << f_len << dendl;
     //FIXME
     if (f_len) {
-      ftruncate(fd, f_len);
-      dout(15) << "XStore::ftruncate(" << fd << ") to " << f_len << dendl;
+      ftruncate(**fd, f_len);
+      dout(15) << "XStore::ftruncate(" << **fd << ") to " << f_len << dendl;
     }
   } else {
     assert(w_off == (uint64_t)offset && w_len == len);
-    got = safe_pwrite(fd, bl.buffers().front().c_str(), w_len, w_off);
+    got = safe_pwrite(**fd, bl.buffers().front().c_str(), w_len, w_off);
   }
 
   if (got < 0) {
@@ -3405,7 +3409,7 @@ int XStore::read(
     posix_fadvise(**fd, offset, len, POSIX_FADV_SEQUENTIAL);
 #endif
   bufferptr ptr;
-  got = direct_read(**fd, ptr, offset, len);
+  got = direct_read(fd, oid, ptr, offset, len, op_flags);
   if (got < 0) {
     dout(10) << "XStore::read(" << cid << "/" << oid << ") pread error: " << cpp_strerror(got) << dendl;
     lfn_close(fd);
@@ -3578,7 +3582,7 @@ int XStore::_write(coll_t cid, const ghobject_t& oid,
   }
     
   // write
-  r = direct_write(**fd, bl, offset, len);
+  r = direct_write(fd, oid, bl, offset, len, fadvise_flags);
   if (r == 0)
     r = bl.length();
 
@@ -3676,7 +3680,7 @@ int XStore::_clone(coll_t cid, const ghobject_t& oldoid, const ghobject_t& newoi
     }
     struct stat st;
     ::fstat(**o, &st);
-    r = _do_clone_range(**o, **n, 0, st.st_size, 0);
+    r = _do_clone_range(o, oldoid, n, newoid, 0, st.st_size, 0);
     if (r < 0) {
       r = -errno;
       goto out3;
@@ -3733,13 +3737,21 @@ int XStore::_clone(coll_t cid, const ghobject_t& oldoid, const ghobject_t& newoi
   return r;
 }
 
-int XStore::_do_clone_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)
+int XStore::_do_clone_range(FDRef& from, const ghobject_t& soid,
+  FDRef& to, const ghobject_t& doid,
+  uint64_t srcoff, uint64_t len, uint64_t dstoff)
 {
   dout(20) << "_do_clone_range copy " << srcoff << "~" << len << " to " << dstoff << dendl;
-  return backend->clone_range(from, to, srcoff, len, dstoff);
+  if (backend->has_fiemap()) {
+    return _do_sparse_copy_range(from, soid, to, doid, srcoff, len, dstoff);
+  } else {
+    return _do_copy_range(from, soid, to, doid, srcoff, len, dstoff);
+  }
 }
 
-int XStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)
+int XStore::_do_sparse_copy_range(FDRef& from, const ghobject_t& soid,
+  FDRef& to, const ghobject_t& doid,
+  uint64_t srcoff, uint64_t len, uint64_t dstoff)
 {
   dout(20) << __func__ << " " << srcoff << "~" << len << " to " << dstoff << dendl;
   int r = 0;
@@ -3749,7 +3761,7 @@ int XStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t le
   if (len == 0)
     return 0;
 
-  r = backend->do_fiemap(from, srcoff, len, &fiemap);
+  r = backend->do_fiemap(**from, srcoff, len, &fiemap);
   if (r < 0) {
     derr << "do_fiemap failed:" << srcoff << "~" << len << " = " << r << dendl;
     return r;
@@ -3798,7 +3810,7 @@ int XStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t le
     bufferptr buf;
     while (src_pos < end_pos) {
       int l = MIN(end_pos - src_pos, buflen);
-      r = direct_read(from, buf, src_pos, l);
+      r = direct_read(from, soid, buf, src_pos, l);
       dout(25) << "  read from " << src_pos << "~" << l << " got " << r << dendl;
       if (r < 0) {
         if (errno == EINTR) {
@@ -3813,13 +3825,13 @@ int XStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t le
       if (r == 0) {
         r = -ERANGE;
         derr << __func__ << " got short read result at " << src_pos
-             << " of fd " << from << " len " << len << dendl;
+             << " of fd " << **from << " len " << len << dendl;
         break;
       }
       bufferlist bl;
       bl.push_back(buf);
-      int r2 = direct_write(to, bl, dst_pos, r);
-      dout(25) << " write to " << to << " len " << bl.length()
+      int r2 = direct_write(to, doid, bl, dst_pos, r);
+      dout(25) << " write to " << **to << " len " << bl.length()
                  << " got " << r2 << dendl;
       if (r2 < 0) {
         derr << "XStore::_do_copy_range: write error at " << dst_pos << "~"
@@ -3836,18 +3848,18 @@ int XStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t le
 
   if (r >= 0) {
     if (m_filestore_sloppy_crc) {
-      int rc = backend->_crc_update_clone_range(from, to, srcoff, len, dstoff);
+      int rc = backend->_crc_update_clone_range(**from, **to, srcoff, len, dstoff);
       assert(rc >= 0);
     }
     struct stat st;
-    r = ::fstat(to, &st);
+    r = ::fstat(**to, &st);
     if (r < 0) {
       r = -errno;
       derr << __func__ << ": fstat error at " << to << " " << cpp_strerror(r) << dendl;
       goto out;
     }
     if (st.st_size < (int)(dstoff + len)) {
-      r = ::ftruncate(to, dstoff + len);
+      r = ::ftruncate(**to, dstoff + len);
       if (r < 0) {
         r = -errno;
         derr << __func__ << ": ftruncate error at " << dstoff+len << " " << cpp_strerror(r) << dendl;
@@ -3862,7 +3874,9 @@ int XStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t le
   return r;
 }
 
-int XStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)
+int XStore::_do_copy_range(FDRef& from, const ghobject_t& soid,
+  FDRef& to, const ghobject_t& doid,
+  uint64_t srcoff, uint64_t len, uint64_t dstoff)
 {
   dout(20) << "_do_copy_range " << srcoff << "~" << len << " to " << dstoff << dendl;
   int r = 0;
@@ -3873,7 +3887,7 @@ int XStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint
   bufferptr buf;
   while (pos < end) {
     int l = MIN(end-pos, buflen);
-    r = direct_read(from, buf, pos, l);
+    r = direct_read(from, soid, buf, pos, l);
     dout(25) << "  read from " << pos << "~" << l << " got " << r << dendl;
     if (r < 0) {
       if (errno == EINTR) {
@@ -3889,13 +3903,13 @@ int XStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint
       // hrm, bad source range, wtf.
       r = -ERANGE;
       derr << "XStore::_do_copy_range got short read result at " << pos
-	      << " of fd " << from << " len " << len << dendl;
+	      << " of fd " << **from << " len " << len << dendl;
       break;
     }
     bufferlist bl;
     bl.push_back(buf);
-    int r2 = direct_write(to, bl, dstoff, r);
-    dout(25) << " write to " << to << " len " << bl.length()
+    int r2 = direct_write(to, doid, bl, dstoff, r);
+    dout(25) << " write to " << **to << " len " << bl.length()
 	       << " got " << r2 << dendl;
     if (r2 < 0) {
       r = r2;
@@ -3907,7 +3921,7 @@ int XStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint
     dstoff += r;
   }
   if (r >= 0 && m_filestore_sloppy_crc) {
-    int rc = backend->_crc_update_clone_range(from, to, srcoff, len, dstoff);
+    int rc = backend->_crc_update_clone_range(**from, **to, srcoff, len, dstoff);
     assert(rc >= 0);
   }
   dout(20) << "_do_copy_range " << srcoff << "~" << len << " to " << dstoff << " = " << r << dendl;
@@ -3933,7 +3947,7 @@ int XStore::_clone_range(coll_t cid, const ghobject_t& oldoid, const ghobject_t&
   if (r < 0) {
     goto out;
   }
-  r = _do_clone_range(**o, **n, srcoff, len, dstoff);
+  r = _do_clone_range(o, oldoid, n, newoid, srcoff, len, dstoff);
   if (r < 0) {
     r = -errno;
     goto out3;

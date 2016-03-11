@@ -682,15 +682,19 @@ public:
     uint32_t op_flags = 0,
     bool allow_eio = false);
   int direct_read(
-    int fd,
+    FDRef fd,
+    const ghobject_t& oid,
     bufferptr &bptr,
     off_t offset,
-    size_t len);
+    size_t len,
+    uint32_t op_flags = 0);
   int direct_write(
-    int fd,
+    FDRef fd,
+    const ghobject_t& oid,
     const bufferlist &bl,
     off_t offset,
-    size_t len);
+    size_t len,
+    uint32_t op_flags = 0);
   int fiemap(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, bufferlist& bl);
 
   int _touch(coll_t cid, const ghobject_t& oid);
@@ -703,9 +707,23 @@ public:
   int _clone_range(coll_t cid, const ghobject_t& oldoid, const ghobject_t& newoid,
 		   uint64_t srcoff, uint64_t len, uint64_t dstoff,
 		   const SequencerPosition& spos);
-  int _do_clone_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff);
-  int _do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff);
-  int _do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff);
+  int _do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)
+  {
+    return -EOPNOTSUPP;
+  }
+  int _do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)
+  {
+    return -EOPNOTSUPP;
+  }
+  int _do_clone_range(FDRef& from, const ghobject_t& soid,
+                      FDRef& to, const ghobject_t& doid,
+                      uint64_t srcoff, uint64_t len, uint64_t dstoff);
+  int _do_sparse_copy_range(FDRef& from, const ghobject_t& soid,
+                            FDRef& to, const ghobject_t& doid,
+                            uint64_t srcoff, uint64_t len, uint64_t dstoff);
+  int _do_copy_range(FDRef& from, const ghobject_t& soid,
+                     FDRef& to, const ghobject_t& doid,
+                     uint64_t srcoff, uint64_t len, uint64_t dstoff);
   int _remove(coll_t cid, const ghobject_t& oid, const SequencerPosition &spos, int osr);
 
   int _fgetattr(int fd, const char* name, bufferptr& bp, int* chunks = NULL);
