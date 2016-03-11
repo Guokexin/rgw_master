@@ -1974,12 +1974,14 @@ public:
   }
 };
 
-ceph_tid_t Objecter::op_submit(Op *op, int *ctx_budget)
+void Objecter::op_submit(Op *op, ceph_tid_t *ptid, int *ctx_budget)
 {
   RWLock::RLocker rl(rwlock);
   RWLock::Context lc(rwlock, RWLock::Context::TakenForRead);
   ceph_tid_t tid = 0;
-  return _op_submit_with_budget(op, lc, &tid, ctx_budget);
+  if (!ptid)
+    ptid = &tid;
+  _op_submit_with_budget(op, lc, ptid, ctx_budget);
 }
 
 ceph_tid_t Objecter::_op_submit_with_budget(Op *op, RWLock::Context& lc, ceph_tid_t *ptid, int *ctx_budget)
