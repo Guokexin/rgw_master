@@ -53,6 +53,36 @@ using namespace std;
 
 #define CEPH_FS_FEATURE_INCOMPAT_SHARDS CompatSet::Feature(1, "sharded objects")
 
+enum {
+  l_xs_first = 84000,
+  l_xs_jq_max_ops,
+  l_xs_jq_ops,
+  l_xs_j_ops,
+  l_xs_jq_max_bytes,
+  l_xs_jq_bytes,
+  l_xs_j_bytes,
+  l_xs_j_lat,
+  l_xs_j_wr,
+  l_xs_j_wr_bytes,
+  l_xs_j_full,
+  l_xs_omap_cache_shard_flush,
+  l_xs_fdcache,
+  l_xs_fdcache_hit,
+  l_xs_committing,
+  l_xs_commit,
+  l_xs_commit_len,
+  l_xs_commit_lat,
+  l_xs_oq_max_ops,
+  l_xs_oq_ops,
+  l_xs_ops,
+  l_xs_oq_max_bytes,
+  l_xs_oq_bytes,
+  l_xs_bytes,
+  l_xs_apply_lat,
+  l_xs_queue_lat,
+  l_xs_wal_op,
+  l_xs_last,
+};
 class XStore : public XJournalingObjectStore,
                public md_config_obs_t,
                public Store

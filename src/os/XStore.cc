@@ -135,10 +135,10 @@ void XStore::FSPerfTracker::update_from_perfcounters(
 {
   os_commit_latency.consume_next(
     logger.get_tavg_ms(
-      l_os_j_lat));
+      l_xs_j_lat));
   os_apply_latency.consume_next(
     logger.get_tavg_ms(
-      l_os_apply_lat));
+      l_xs_apply_lat));
 }
 
 
@@ -295,9 +295,9 @@ int XStore::lfn_open(const coll_t& cid,
   }
   if (!replaying) {
     *outfd = fdcache.lookup(oid);
-    logger->inc(l_os_fdcache);
+    logger->inc(l_xs_fdcache);
     if (*outfd) {
-      logger->inc(l_os_fdcache_hit);
+      logger->inc(l_xs_fdcache_hit);
       if (need_lock) {
         ((*index).index)->access_lock.put_write();
       }
@@ -632,35 +632,35 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   omap_dir = omss.str();
 
   // initialize logger
-  PerfCountersBuilder plb(g_ceph_context, internal_name, l_os_first, l_os_last);
+  PerfCountersBuilder plb(g_ceph_context, internal_name, l_xs_first, l_xs_last);
 
-  plb.add_u64(l_os_jq_max_ops, "journal_queue_max_ops");
-  plb.add_u64(l_os_jq_ops, "journal_queue_ops");
-  plb.add_u64_counter(l_os_j_ops, "journal_ops");
-  plb.add_u64(l_os_jq_max_bytes, "journal_queue_max_bytes");
-  plb.add_u64(l_os_jq_bytes, "journal_queue_bytes");
-  plb.add_u64_counter(l_os_j_bytes, "journal_bytes");
-  plb.add_time_avg(l_os_j_lat, "journal_latency");
-  plb.add_u64_counter(l_os_j_wr, "journal_wr");
-  plb.add_u64_avg(l_os_j_wr_bytes, "journal_wr_bytes");
-  plb.add_u64_counter(l_os_omap_cache_shard_flush, "omap_cache_shard_flush");
-  plb.add_u64(l_os_oq_max_ops, "op_queue_max_ops");
-  plb.add_u64(l_os_oq_ops, "op_queue_ops");
-  plb.add_u64_counter(l_os_ops, "ops");
-  plb.add_u64(l_os_oq_max_bytes, "op_queue_max_bytes");
-  plb.add_u64(l_os_oq_bytes, "op_queue_bytes");
-  plb.add_u64_counter(l_os_bytes, "bytes");
-  plb.add_time_avg(l_os_apply_lat, "apply_latency");
-  plb.add_u64_counter(l_os_fdcache, "fdcache");
-  plb.add_u64_counter(l_os_fdcache_hit, "fdcache_hit");
-  plb.add_u64(l_os_wal_op, "write_ahead_log");
-  plb.add_u64(l_os_committing, "committing");
+  plb.add_u64(l_xs_jq_max_ops, "journal_queue_max_ops");
+  plb.add_u64(l_xs_jq_ops, "journal_queue_ops");
+  plb.add_u64_counter(l_xs_j_ops, "journal_ops");
+  plb.add_u64(l_xs_jq_max_bytes, "journal_queue_max_bytes");
+  plb.add_u64(l_xs_jq_bytes, "journal_queue_bytes");
+  plb.add_u64_counter(l_xs_j_bytes, "journal_bytes");
+  plb.add_time_avg(l_xs_j_lat, "journal_latency");
+  plb.add_u64_counter(l_xs_j_wr, "journal_wr");
+  plb.add_u64_avg(l_xs_j_wr_bytes, "journal_wr_bytes");
+  plb.add_u64_counter(l_xs_omap_cache_shard_flush, "omap_cache_shard_flush");
+  plb.add_u64(l_xs_oq_max_ops, "op_queue_max_ops");
+  plb.add_u64(l_xs_oq_ops, "op_queue_ops");
+  plb.add_u64_counter(l_xs_ops, "ops");
+  plb.add_u64(l_xs_oq_max_bytes, "op_queue_max_bytes");
+  plb.add_u64(l_xs_oq_bytes, "op_queue_bytes");
+  plb.add_u64_counter(l_xs_bytes, "bytes");
+  plb.add_time_avg(l_xs_apply_lat, "apply_latency");
+  plb.add_u64_counter(l_xs_fdcache, "fdcache");
+  plb.add_u64_counter(l_xs_fdcache_hit, "fdcache_hit");
+  plb.add_u64(l_xs_wal_op, "write_ahead_log");
+  plb.add_u64(l_xs_committing, "committing");
 
-  plb.add_u64_counter(l_os_commit, "commitcycle");
-  plb.add_time_avg(l_os_commit_len, "commitcycle_interval");
-  plb.add_time_avg(l_os_commit_lat, "commitcycle_latency");
-  plb.add_u64_counter(l_os_j_full, "journal_full");
-  plb.add_time_avg(l_os_queue_lat, "queue_transaction_latency_avg");
+  plb.add_u64_counter(l_xs_commit, "commitcycle");
+  plb.add_time_avg(l_xs_commit_len, "commitcycle_interval");
+  plb.add_time_avg(l_xs_commit_lat, "commitcycle_latency");
+  plb.add_u64_counter(l_xs_j_full, "journal_full");
+  plb.add_time_avg(l_xs_queue_lat, "queue_transaction_latency_avg");
 
   logger = plb.create_perf_counters();
 
@@ -1706,8 +1706,8 @@ void XStore::queue_op(OpSequencer *osr, Op *o)
 
   osr->queue(o);
 
-  logger->inc(l_os_ops);
-  logger->inc(l_os_bytes, o->bytes);
+  logger->inc(l_xs_ops);
+  logger->inc(l_xs_bytes, o->bytes);
 
   dout(5) << "queue_op " << o << " seq " << o->op
 	  << " " << *osr
@@ -1728,8 +1728,8 @@ void XStore::op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle)
     max_bytes += m_filestore_queue_committing_max_bytes;
   }
 
-  logger->set(l_os_oq_max_ops, max_ops);
-  logger->set(l_os_oq_max_bytes, max_bytes);
+  logger->set(l_xs_oq_max_ops, max_ops);
+  logger->set(l_xs_oq_max_bytes, max_bytes);
 
   utime_t start = ceph_clock_now(g_ceph_context);
   {
@@ -1750,10 +1750,10 @@ void XStore::op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle)
     op_queue_bytes += o->bytes;
   }
   utime_t end = ceph_clock_now(g_ceph_context);
-  logger->tinc(l_os_queue_lat, end - start);
+  logger->tinc(l_xs_queue_lat, end - start);
 
-  logger->set(l_os_oq_ops, op_queue_len);
-  logger->set(l_os_oq_bytes, op_queue_bytes);
+  logger->set(l_xs_oq_ops, op_queue_len);
+  logger->set(l_xs_oq_bytes, op_queue_bytes);
 }
 
 void XStore::op_queue_release_throttle(Op *o)
@@ -1765,8 +1765,8 @@ void XStore::op_queue_release_throttle(Op *o)
     op_throttle_cond.Signal();
   }
 
-  logger->set(l_os_oq_ops, op_queue_len);
-  logger->set(l_os_oq_bytes, op_queue_bytes);
+  logger->set(l_xs_oq_ops, op_queue_len);
+  logger->set(l_xs_oq_bytes, op_queue_bytes);
 }
 
 void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
@@ -1839,7 +1839,7 @@ void XStore::_finish_op(OpSequencer *osr)
 
   utime_t lat = ceph_clock_now(g_ceph_context);
   lat -= o->start;
-  logger->tinc(l_os_apply_lat, lat);
+  logger->tinc(l_xs_apply_lat, lat);
 
   if (o->onreadable_sync) {
     o->onreadable_sync->complete(0);
@@ -2267,7 +2267,7 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
       delete jtls;
       jtls = &(o->tls);
       osr->pending_wal.inc();
-      logger->inc(l_os_wal_op);
+      logger->inc(l_xs_wal_op);
     }
     op_queue_reserve_throttle(o, handle);
     journal->throttle();
@@ -4034,7 +4034,7 @@ void XStore::sync_entry()
       timer.add_event_after(m_filestore_commit_timeout, sync_entry_timeo);
       sync_entry_timeo_lock.Unlock();
 
-      logger->set(l_os_committing, 1);
+      logger->set(l_xs_committing, 1);
 
       dout(15) << "sync_entry committing " << cp << dendl;
       stringstream errstream;
@@ -4049,7 +4049,7 @@ void XStore::sync_entry()
         int err;
         for (int idx = 0; idx < pgmeta_cache.pgmeta_shards; ++idx) {
           err = pgmeta_cache.submit_shard(idx);
-          logger->inc(l_os_omap_cache_shard_flush);
+          logger->inc(l_xs_omap_cache_shard_flush);
           if (err < 0) {
             derr << "submit omap keys got " << cpp_strerror(err) << dendl;
             assert(0 == "submit_shard returned error");
@@ -4079,13 +4079,13 @@ void XStore::sync_entry()
       utime_t dur = done - startwait;
       dout(10) << "sync_entry commit took " << lat << ", interval was " << dur << dendl;
 
-      logger->inc(l_os_commit);
-      logger->tinc(l_os_commit_lat, lat);
-      logger->tinc(l_os_commit_len, dur);
+      logger->inc(l_xs_commit);
+      logger->tinc(l_xs_commit_lat, lat);
+      logger->tinc(l_xs_commit_len, dur);
 
       apply_manager.commit_finish();
 
-      logger->set(l_os_committing, 0);
+      logger->set(l_xs_committing, 0);
 
       dout(15) << "sync_entry committed to op_seq " << cp << dendl;
 
@@ -5577,7 +5577,7 @@ int XStore::_omap_setkeys(coll_t cid, const ghobject_t &hoid,
   int r = 0;
   if (hoid.is_pgmeta() && !replaying) {
     if (pgmeta_cache.set_keys(hoid, aset))
-      logger->inc(l_os_omap_cache_shard_flush);
+      logger->inc(l_xs_omap_cache_shard_flush);
   } else {
     r = object_map->set_keys(hoid, aset, &spos);
   }

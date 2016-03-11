@@ -818,7 +818,7 @@ int XJournal::prepare_multi_write(bufferlist& bl, uint64_t& orig_ops, uint64_t& 
           goto out;         // commit what we have
 
         if (logger)
-          logger->inc(l_os_j_full);
+          logger->inc(l_xs_j_full);
 
         if (wait_on_full) {
           dout(20) << "prepare_multi_write full on first entry, need to wait" << dendl;
@@ -900,7 +900,7 @@ void XJournal::queue_completions_thru(uint64_t seq)
 	     << " " << next.finish
 	     << " lat " << lat << dendl;
     if (logger) {
-      logger->tinc(l_os_j_lat, lat);
+      logger->tinc(l_xs_j_lat, lat);
     }
     if (next.finish)
       finisher->queue(next.finish);
@@ -1247,8 +1247,8 @@ void XJournal::write_thread_entry()
     assert(r == 0);
 
     if (logger) {
-      logger->inc(l_os_j_wr);
-      logger->inc(l_os_j_wr_bytes, bl.length());
+      logger->inc(l_xs_j_wr);
+      logger->inc(l_xs_j_wr_bytes, bl.length());
     }
 
 #ifdef HAVE_LIBAIO
@@ -1646,10 +1646,10 @@ void XJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
   if (osd_op)
     osd_op->mark_event("commit_queued_for_journal_write");
   if (logger) {
-    logger->set(l_os_jq_max_ops, throttle_ops.get_max());
-    logger->set(l_os_jq_max_bytes, throttle_bytes.get_max());
-    logger->set(l_os_jq_ops, throttle_ops.get_current());
-    logger->set(l_os_jq_bytes, throttle_bytes.get_current());
+    logger->set(l_xs_jq_max_ops, throttle_ops.get_max());
+    logger->set(l_xs_jq_max_bytes, throttle_bytes.get_max());
+    logger->set(l_xs_jq_ops, throttle_ops.get_current());
+    logger->set(l_xs_jq_bytes, throttle_bytes.get_current());
   }
 
   {
@@ -1827,12 +1827,12 @@ void XJournal::put_throttle(uint64_t ops, uint64_t bytes)
 	   << dendl;
 
   if (logger) {
-    logger->inc(l_os_j_ops, ops);
-    logger->inc(l_os_j_bytes, bytes);
-    logger->set(l_os_jq_ops, new_ops);
-    logger->set(l_os_jq_bytes, new_bytes);
-    logger->set(l_os_jq_max_ops, throttle_ops.get_max());
-    logger->set(l_os_jq_max_bytes, throttle_bytes.get_max());
+    logger->inc(l_xs_j_ops, ops);
+    logger->inc(l_xs_j_bytes, bytes);
+    logger->set(l_xs_jq_ops, new_ops);
+    logger->set(l_xs_jq_bytes, new_bytes);
+    logger->set(l_xs_jq_max_ops, throttle_ops.get_max());
+    logger->set(l_xs_jq_max_bytes, throttle_bytes.get_max());
   }
 }
 
