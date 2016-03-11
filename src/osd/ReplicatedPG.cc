@@ -6165,8 +6165,9 @@ int ReplicatedPG::fill_in_copy_get(
         result = left;
 	cb->len = result;
       } else {
+        uint64_t max_read = MIN(left, oi.size - cursor.data_offset);
 	result = pgbackend->objects_read_sync(
-	  oi.soid, cursor.data_offset, left, osd_op.op.flags, &bl);
+	  oi.soid, cursor.data_offset, max_read, osd_op.op.flags, &bl);
 	if (result < 0)
 	  return result;
       }
