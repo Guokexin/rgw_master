@@ -548,6 +548,7 @@ public:
       switch (op->op) {
       case OP_NOP:
       case OP_STARTSYNC:
+      case OP_WRITE_AHEAD_LOG:
         break;
 
       case OP_TOUCH:
@@ -566,6 +567,8 @@ public:
       case OP_ZERO:
       case OP_TRUNCATE:
       case OP_SETALLOCHINT:
+      case OP_PGMETA_RMKEYS:
+      case OP_PGMETA_SETKEYS:
         assert(op->cid < cm.size());
         assert(op->oid < om.size());
         op->cid = cm[op->cid];
@@ -1045,7 +1048,6 @@ public:
       const map<string, bufferlist> &attrset ///< [in] Replacement keys and values
       ) {
       if (use_tbl) {
-        assert(false);
         __u32 op = OP_PGMETA_SETKEYS;
         ::encode(op, tbl);
         ::encode(cid, tbl);
