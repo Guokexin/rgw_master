@@ -2809,16 +2809,16 @@ void Objecter::_throttle_op(Op *op, int op_budget)
 
   if (!op_budget)
     op_budget = calc_op_budget(op);
-  if (!op_throttle_bytes.get_or_fail(op_budget)) { //couldn't take right now
-    rwlock.unlock();
-    op_throttle_bytes.get(op_budget);
-    rwlock.get(locked_for_write);
-  }
-  if (!op_throttle_ops.get_or_fail(1)) { //couldn't take right now
-    rwlock.unlock();
-    op_throttle_ops.get(1);
-    rwlock.get(locked_for_write);
-  }
+  // if (!op_throttle_bytes.get_or_fail(op_budget)) { //couldn't take right now
+  //   rwlock.unlock();
+  //   op_throttle_bytes.get(op_budget);
+  //   rwlock.get(locked_for_write);
+  // }
+  // if (!op_throttle_ops.get_or_fail(1)) { //couldn't take right now
+  //   rwlock.unlock();
+  //   op_throttle_ops.get(1);
+  //   rwlock.get(locked_for_write);
+  // }
 }
 
 void Objecter::unregister_op(Op *op)

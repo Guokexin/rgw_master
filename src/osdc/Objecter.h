@@ -1819,25 +1819,24 @@ private:
     if (keep_balanced_budget) {
       _throttle_op(op, op_budget);
     } else {
-      op_throttle_bytes.take(op_budget);
-      op_throttle_ops.take(1);
+      // op_throttle_bytes.take(op_budget);
+      // op_throttle_ops.take(1);
     }
     op->budgeted = true;
     return op_budget;
   }
   void put_op_budget_bytes(int op_budget) {
-    assert(op_budget >= 0);
-    op_throttle_bytes.put(op_budget);
-    op_throttle_ops.put(1);
+    // assert(op_budget >= 0);
+    // op_throttle_bytes.put(op_budget);
+    // op_throttle_ops.put(1);
   }
   void put_op_budget(Op *op) {
-    assert(op->budgeted);
-    int op_budget = calc_op_budget(op);
-    put_op_budget_bytes(op_budget);
+    // assert(op->budgeted);
+    // int op_budget = calc_op_budget(op);
+    // put_op_budget_bytes(op_budget);
   }
   void put_list_context_budget(ListContext *list_context);
   void put_nlist_context_budget(NListContext *list_context);
-  Throttle op_throttle_bytes, op_throttle_ops;
 
  public:
   Objecter(CephContext *cct_, Messenger *m, MonClient *mc,
@@ -1865,8 +1864,6 @@ private:
     homeless_session(new OSDSession(cct, -1)),
     mon_timeout(mon_timeout),
     osd_timeout(osd_timeout),
-    op_throttle_bytes(cct, "objecter_bytes", cct->_conf->objecter_inflight_op_bytes),
-    op_throttle_ops(cct, "objecter_ops", cct->_conf->objecter_inflight_ops),
     epoch_barrier(0)
   { }
   ~Objecter();
