@@ -67,6 +67,7 @@ public:
       image_watcher(NULL),
       refresh_seq(0),
       last_refresh(0),
+      metadata_updated(false),
       owner_lock("librbd::ImageCtx::owner_lock"),
       md_lock("librbd::ImageCtx::md_lock"),
       cache_lock("librbd::ImageCtx::cache_lock"),
@@ -182,7 +183,7 @@ public:
       }
 
       header_oid = header_name(id);
-      apply_metadata_confs();
+      apply_metadata_confs(old_format);
       r = cls_client::get_immutable_metadata(&md_ctx, header_oid,
 					     &object_prefix, &order);
       if (r < 0) {
@@ -201,7 +202,7 @@ public:
 
       init_layout();
     } else {
-      apply_metadata_confs();
+      apply_metadata_confs(old_format);
       header_oid = old_header_name(name);
     }
     perfcounter->set(l_librbd_throttle_enabled, throttle.enabled());
@@ -901,9 +902,10 @@ public:
     return true;
   }
 
-  void ImageCtx::apply_metadata_confs() {
+  void ImageCtx::apply_metadata_confs(bool old_format) {
     ldout(cct, 20) << __func__ << dendl;
     static uint64_t max_conf_items = 128;
+    md_config_t local_config_t;
     std::map<string, bool> configs = boost::assign::map_list_of(
         "rbd_cache", false)(
         "rbd_cache_writethrough_until_flush", false)(
@@ -926,36 +928,37 @@ public:
         "rbd_blacklist_expire_seconds", false)(
         "rbd_request_timed_out_seconds", false);
 
-    string start = METADATA_CONF_PREFIX;
-    int r = 0, j = 0;
-    bool is_continue;
-    md_config_t local_config_t;
-    do {
-      map<string, bufferlist> pairs, res;
-      r = cls_client::metadata_list(&md_ctx, header_oid, start, max_conf_items,
-                                    &pairs);
-      if (r == -EOPNOTSUPP || r == -EIO) {
-        ldout(cct, 10) << "config metadata not supported by OSD" << dendl;
-        break;
-      } else if (r < 0) {
-        lderr(cct) << __func__ << " couldn't list config metadata: " << r
-                   << dendl;
-        break;
-      }
-      if (pairs.empty())
-        break;
-      
-      is_continue = _filter_metadata_confs(METADATA_CONF_PREFIX, configs, pairs, &res);
-      for (map<string, bufferlist>::iterator it = res.begin(); it != res.end(); ++it) {
-        j = local_config_t.set_val(it->first.c_str(), it->second.c_str());
-        if (j < 0)
-          lderr(cct) << __func__ << " failed to set config " << it->first << " with value "
-                     << it->second.c_str() << ": " << j << dendl;
-        break;
-      }
-      aware_metadata(METADATA_CONF_PREFIX, pairs);
-      start = pairs.rbegin()->first;
-    } while (is_continue);
+    if (!old_format) {
+      string start = METADATA_CONF_PREFIX;
+      int r = 0, j = 0;
+      bool is_continue;
+      do {
+        map<string, bufferlist> pairs, res;
+        r = cls_client::metadata_list(&md_ctx, header_oid, start, max_conf_items,
+                                      &pairs);
+        if (r == -EOPNOTSUPP || r == -EIO) {
+          ldout(cct, 10) << "config metadata not supported by OSD" << dendl;
+          break;
+        } else if (r < 0) {
+          lderr(cct) << __func__ << " couldn't list config metadata: " << r
+                     << dendl;
+          break;
+        }
+        if (pairs.empty())
+          break;
+        
+        is_continue = _filter_metadata_confs(METADATA_CONF_PREFIX, configs, pairs, &res);
+        for (map<string, bufferlist>::iterator it = res.begin(); it != res.end(); ++it) {
+          j = local_config_t.set_val(it->first.c_str(), it->second.c_str());
+          if (j < 0)
+            lderr(cct) << __func__ << " failed to set config " << it->first << " with value "
+                       << it->second.c_str() << ": " << j << dendl;
+          break;
+        }
+        aware_metadata(METADATA_CONF_PREFIX, pairs);
+        start = pairs.rbegin()->first;
+      } while (is_continue);
+    }
 
 #define ASSIGN_OPTION(config)                                                      \
     do {                                                                           \
@@ -986,9 +989,6 @@ public:
     ASSIGN_OPTION(blacklist_expire_seconds);
     ASSIGN_OPTION(request_timed_out_seconds);
     ASSIGN_OPTION(enable_alloc_hint);
-    if (throttle.enabled()) {
-      throttle.attach_context(new ThrottleContext(this, false), new ThrottleContext(this, true));
-    }
   }
 
   void ImageCtx::aware_metadata(string prefix, map<string, bufferlist> &metadata)
@@ -1007,6 +1007,7 @@ public:
         "rbd_throttle_iops_read_max", THROTTLE_OPS_READ)(
         "rbd_throttle_iops_write", THROTTLE_OPS_WRITE)(
         "rbd_throttle_iops_write_max", THROTTLE_OPS_WRITE);
+    bool throttle_enabled_pre = throttle.enabled();
 
     for (map<string, enum BucketType>::const_iterator it = throttle_configs.begin();
          it != throttle_configs.end(); ++it) {
@@ -1030,6 +1031,10 @@ public:
                        << " avg=" << avg << " max=" << max << dendl;
         throttle.config(it->second, avg, max);
       }
+    }
+
+    if (!throttle_enabled_pre && throttle.enabled()) {
+      throttle.attach_context(new ThrottleContext(this, false), new ThrottleContext(this, true));
     }
   }
 

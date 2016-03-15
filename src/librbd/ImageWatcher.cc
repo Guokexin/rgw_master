@@ -488,11 +488,12 @@ int ImageWatcher::notify_snap_create(const std::string &snap_name) {
 }
 
 void ImageWatcher::notify_header_update(librados::IoCtx &io_ctx,
-				        const std::string &oid)
+				        const std::string &oid,
+					bool metadata_changed)
 {
   // supports legacy (empty buffer) clients
   bufferlist bl;
-  ::encode(NotifyMessage(HeaderUpdatePayload()), bl);
+  ::encode(NotifyMessage(HeaderUpdatePayload(metadata_changed)), bl);
 
   io_ctx.notify2(oid, bl, NOTIFY_TIMEOUT, NULL);
 }
@@ -718,6 +719,7 @@ void ImageWatcher::handle_payload(const HeaderUpdatePayload &payload,
 
   Mutex::Locker lictx(m_image_ctx.refresh_lock);
   ++m_image_ctx.refresh_seq;
+  m_image_ctx.metadata_updated = payload.metadata_updated;
   m_image_ctx.perfcounter->inc(l_librbd_notify);
 }
 

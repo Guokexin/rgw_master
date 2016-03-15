@@ -304,7 +304,7 @@ int invoke_async_request(ImageCtx *ictx, const std::string& request_type,
     return 0;
   }
 
-  int notify_change(IoCtx& io_ctx, const string& oid, ImageCtx *ictx)
+  int notify_change(IoCtx& io_ctx, const string& oid, ImageCtx *ictx, bool metadata_changed)
   {
     if (ictx) {
       ictx->refresh_lock.Lock();
@@ -314,7 +314,7 @@ int invoke_async_request(ImageCtx *ictx, const std::string& request_type,
       ictx->refresh_lock.Unlock();
     }
 
-    ImageWatcher::notify_header_update(io_ctx, oid);
+    ImageWatcher::notify_header_update(io_ctx, oid, metadata_changed);
     return 0;
   }
 
@@ -2077,6 +2077,47 @@ reprotect_and_return_err:
 			       << dendl;
 	      return r;
 	    }
+
+            ictx->refresh_lock.Lock();
+            bool md_updated = ictx->metadata_updated;
+	    if (md_updated)
+	      ictx->metadata_updated = false;
+            ictx->refresh_lock.Unlock();
+	    if (md_updated) {
+              static uint64_t max_conf_items = 128;
+              string start = ImageCtx::METADATA_CONF_PREFIX;
+              int r = 0;
+	      do {
+                map<string, bufferlist> pairs;
+                r = cls_client::metadata_list(&ictx->md_ctx, ictx->header_oid, start,
+		                              max_conf_items, &pairs);
+                if (r == -EOPNOTSUPP || r == -EIO) {
+                  ldout(cct, 10) << "config metadata not supported by OSD" << dendl;
+                  break;
+                } else if (r < 0) {
+                  lderr(cct) << __func__ << " couldn't list config metadata: " << r
+                             << dendl;
+                  return r;
+                }
+
+                if (pairs.empty())
+                  break;
+
+		size_t conf_prefix_len = ImageCtx::METADATA_CONF_PREFIX.size();
+                for (map<string, bufferlist>::iterator it = pairs.begin();
+		     it != pairs.end(); ++it) {
+                  if (it->first.compare(0, conf_prefix_len, ImageCtx::METADATA_CONF_PREFIX) > 0)
+                    continue;
+                  if (it->first.size() <= conf_prefix_len ||
+		      it->first.compare(0, conf_prefix_len, ImageCtx::METADATA_CONF_PREFIX))
+                    break;
+                }
+
+                ictx->aware_metadata(ImageCtx::METADATA_CONF_PREFIX, pairs);
+                start = pairs.rbegin()->first;
+	      } while (true);
+	    }
+
 	  } while (r == -ENOENT);
 	}
 
@@ -3452,6 +3493,8 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+    if (ictx->old_format)
+      return -EPERM;
 
     return cls_client::metadata_get(&ictx->md_ctx, ictx->header_oid, key, value);
   }
@@ -3465,10 +3508,19 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+    if (ictx->old_format)
+      return -EPERM;
 
     map<string, bufferlist> data;
     data[key].append(value);
-    return cls_client::metadata_set(&ictx->md_ctx, ictx->header_oid, data);
+    r = cls_client::metadata_set(&ictx->md_ctx, ictx->header_oid, data);
+    if (r < 0) {
+      return r;
+    }
+
+    ictx->aware_metadata("conf_", data);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx, true);
+    return 0;
   }
 
   int metadata_remove(ImageCtx *ictx, const string &key)
@@ -3480,6 +3532,8 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+    if (ictx->old_format)
+      return -EPERM;
 
     return cls_client::metadata_remove(&ictx->md_ctx, ictx->header_oid, key);
   }
@@ -3493,6 +3547,8 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+    if (ictx->old_format)
+      return -EPERM;
 
     return cls_client::metadata_list(&ictx->md_ctx, ictx->header_oid, start, max, pairs);
   }
