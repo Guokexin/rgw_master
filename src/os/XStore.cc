@@ -2142,6 +2142,13 @@ bool XStore::get_replay_txns(list<Transaction*>& tls,
         break;
 
       case Transaction::OP_SETALLOCHINT:
+        {
+          coll_t cid = i.get_cid(op->cid);
+          ghobject_t oid = i.get_oid(op->oid);
+          uint64_t expected_object_size = op->expected_object_size;
+          uint64_t expected_write_size = op->expected_write_size;
+          jtran->set_alloc_hint(cid, oid, expected_object_size, expected_write_size);
+        }
         break;
 
       default:
