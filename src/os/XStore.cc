@@ -189,6 +189,7 @@ int XStore::lfn_find(const ghobject_t& oid, const Index& index, IndexedPath *pat
 
 int XStore::lfn_truncate(coll_t cid, const ghobject_t& oid, off_t length)
 {
+  dout(15) << "lfn_truncate " << cid << "/" << oid << " " << length << dendl;
   FDRef fd;
   int r = lfn_open(cid, oid, false, &fd);
   if (r < 0)
@@ -201,6 +202,7 @@ int XStore::lfn_truncate(coll_t cid, const ghobject_t& oid, off_t length)
     assert(rc >= 0);
   }
   assert(!m_filestore_fail_eio || r != -EIO);
+  dout(10) << "lfn_truncate " << cid << "/" << oid << " " << length << "=" << r << dendl;
   return r;
 }
 
@@ -2345,6 +2347,9 @@ void XStore::_journaled_ack_written(list<Op *> acks)
     dout(5) << __func__ << *o << dendl;
     o->state = Op::STATE_ACK;
 
+    // this should queue in order because the journal does it's completions in order.
+    queue_op(osr, o);
+
     if (o->wal) {
       osr->pending_lock.Lock();
       dout(5) << __func__ << *o << " wait up " << dendl;
@@ -2352,9 +2357,6 @@ void XStore::_journaled_ack_written(list<Op *> acks)
       osr->pending_cond.Signal();
       osr->pending_lock.Unlock();
     }
-
-    // this should queue in order because the journal does it's completions in order.
-    queue_op(osr, o);
 
     list<Context*> to_queue;
     osr->dequeue_journal(&to_queue);
@@ -3296,6 +3298,8 @@ int XStore::direct_read(
     got = 0;
   }
   bptr.set_length(got);   // properly size the buffer
+  dout(10) << "XStore::direct_read(" << **fd << ") " << offset << "~" << len
+           << " got " << got << dendl;
   return got;
 }
 
@@ -3308,7 +3312,7 @@ int XStore::direct_write(
   uint32_t fadvise_flags)
 {
   assert(bl.length() == len);
-  int got = 0;
+  int r = 0, got = 0;
   uint64_t front_extra = offset % m_block_size;
   uint64_t front_off = offset - front_extra;
   uint64_t w_off = front_off;
@@ -3365,8 +3369,18 @@ int XStore::direct_write(
              << " " << footer_off  << "~" << footer_extra << " f_len " << f_len << dendl;
     //FIXME
     if (f_len) {
-      ftruncate(**fd, f_len);
-      dout(15) << "XStore::ftruncate(" << **fd << ") to " << f_len << dendl;
+      r = ::ftruncate(**fd, f_len);
+      if (r < 0) {
+        r = -errno;
+        dout(5) << "XStore::ftruncate(" << **fd << ") to " << f_len << " r=" << r << dendl;
+        assert(0 == "Unexpected Error");
+      }
+#if 1
+      struct stat st;
+      r = ::fstat(**fd, &st);
+      assert(f_len == st.st_size);
+#endif
+      dout(15) << "XStore::ftruncate(" << **fd << ") to " << f_len << " r=" << r << dendl;
     }
   } else {
     assert(w_off == (uint64_t)offset && w_len == len);
