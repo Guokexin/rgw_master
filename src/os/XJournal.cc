@@ -915,13 +915,6 @@ int XJournal::prepare_single_write(write_item &next_write, bufferlist& bl, off64
 {
   uint64_t seq = next_write.seq;
   bufferlist &ebl = next_write.bl;
-  if (ebl.buffers().size() != 1) {
-    dout(0) << " bl should be continus memory, fix me" << dendl;
-    bufferptr ptr = buffer::create_page_aligned(ebl.length());
-    ptr.copy_in(0, ebl.length(), ebl.c_str());
-    ebl.clear();
-    ebl.push_back(ptr);
-  }
   off64_t size = ebl.length();
 
   int r = check_for_full(queue_pos, size + 2 * header.alignment);
@@ -949,7 +942,8 @@ int XJournal::prepare_single_write(write_item &next_write, bufferlist& bl, off64
   ptr.copy_in(magic1_offset, sizeof(uint64_t), (char *)&_queue_pos);
   ptr.copy_in(magic2_offset, sizeof(uint64_t), (char *)&magic2);
 
-  unsigned post_offset  = size - sizeof(entry_header_t);
+  ptr = ebl.buffers().back();
+  unsigned post_offset  = ptr.length() - sizeof(entry_header_t);
   ptr.copy_in(post_offset + seq_offset, sizeof(uint64_t), (char *)&_seq);
   ptr.copy_in(post_offset + magic1_offset, sizeof(uint64_t), (char *)&_queue_pos);
   ptr.copy_in(post_offset + magic2_offset, sizeof(uint64_t), (char *)&magic2);
