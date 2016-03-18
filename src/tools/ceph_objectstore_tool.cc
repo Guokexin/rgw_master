@@ -1006,6 +1006,10 @@ int export_files(ObjectStore *store, coll_t coll)
 	continue;
       }
       r = export_file(store, coll, *i);
+      if (r == -ENODATA &&
+          store->get_type() == "xstore") {
+        continue;
+      }
       if (r < 0)
         return r;
     }

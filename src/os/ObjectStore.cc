@@ -22,12 +22,16 @@
 #include "KeyValueStore.h"
 #include "common/safe_io.h"
 
+
+string ObjectStore::type = "";
+
 ObjectStore *ObjectStore::create(CephContext *cct,
 				 const string& type,
 				 const string& data,
 				 const string& journal,
 			         osflagbits_t flags)
 {
+  ObjectStore::type = type;
   if (type == "filestore") {
     return new FileStore(data, journal, flags);
   }

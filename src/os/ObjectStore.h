@@ -97,6 +97,7 @@ protected:
   string path;
 
 public:
+  static string type;
   /**
    * create - create an ObjectStore instance.
    *
@@ -2239,6 +2240,8 @@ public:
   virtual void sync() {}
   virtual void flush() {}
   virtual void sync_and_flush() {}
+
+  string get_type() { return type; }
 
   virtual int dump_journal(ostream& out) { return -EOPNOTSUPP; }
 
