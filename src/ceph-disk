@@ -96,7 +96,9 @@ MOUNT_OPTIONS = dict(
     # issues with ext4 before the xatts-in-leveldb work, and it seemed
     # that user_xattr helped
     ext4='noatime,user_xattr',
-    xfs='noatime,inode64',
+    # We see some failed mount because of duplicate uuid, mount with
+    # nouuid can fix this issue.
+    xfs='noatime,inode64,nouuid',
     )
 
 MKFS_ARGS = dict(
