@@ -485,7 +485,8 @@ CEPH_RBD_API int rbd_metadata_remove(rbd_image_t image, const char *key);
 CEPH_RBD_API int rbd_metadata_list(rbd_image_t image, const char *start, uint64_t max,
     char *keys, size_t *key_len, char *values, size_t *vals_len);
 
-
+CEPH_RBD_API ssize_t rbd_compare_write(rbd_image_t image, uint64_t ofs, size_t len,
+    const char *compare_buf, const char *write_buf);
 #ifdef __cplusplus
 }
 #endif

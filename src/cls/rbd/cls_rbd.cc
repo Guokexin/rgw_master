@@ -100,6 +100,7 @@ cls_method_handle_t h_metadata_set;
 cls_method_handle_t h_metadata_remove;
 cls_method_handle_t h_metadata_list;
 cls_method_handle_t h_metadata_get;
+cls_method_handle_t h_compare_write;
 cls_method_handle_t h_old_snapshots_list;
 cls_method_handle_t h_old_snapshot_add;
 cls_method_handle_t h_old_snapshot_remove;
@@ -2301,6 +2302,57 @@ int metadata_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   return 0;
 }
 
+/**
+ * Input:
+ * @param offset
+ * @param len
+ * @param compare_data: the data to compare
+ * @param write_data: the data to write
+ *
+ * Output:
+ * @returns 0 on success, negative error code on failure
+ */
+int compare_write(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+  uint64_t offset, len;
+  bufferlist cmp_data, wr_data;
+
+  bufferlist::iterator iter = in->begin();
+  try {
+    ::decode(offset, iter);
+    ::decode(len, iter);
+    ::decode(cmp_data, iter);
+    ::decode(wr_data, iter);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  // read the data
+  bufferlist bl;
+  int r = cls_cxx_read(hctx, offset, len, &bl);
+  if (r < 0) {
+   return r;
+  }
+
+  // compare the data
+  if (bl.length() != cmp_data.length()) {
+    CLS_ERR("compare data length doesn't match: %d", r);
+    return -EINVAL;
+  } else if (!(bl == cmp_data)) {
+    CLS_ERR("compare data doesn't match: %d", r);
+    return -EILSEQ;
+  }
+
+  // write the data
+  r = cls_cxx_write(hctx, offset, len, &wr_data);
+  if (r < 0) {
+    CLS_ERR("error writing data: %d", r);
+    return r;
+  }
+
+  return 0;
+}
+
 
 /****************************** Old format *******************************/
 
@@ -2575,6 +2627,9 @@ void __cls_init()
   cls_register_cxx_method(h_class, "metadata_get",
                           CLS_METHOD_RD,
 			  metadata_get, &h_metadata_get);
+  cls_register_cxx_method(h_class, "compare_write",
+                          CLS_METHOD_RD | CLS_METHOD_WR,
+			  compare_write, &h_compare_write);
 
   /* methods for the rbd_children object */
   cls_register_cxx_method(h_class, "add_child",

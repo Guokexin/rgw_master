@@ -96,6 +96,10 @@ namespace librbd {
                         const std::string &key);
     int metadata_get(librados::IoCtx *ioctx, const std::string &oid,
                      const std::string &key, string *v);
+    int compare_write(librados::IoCtx *ioctx, const std::string &oid,
+	              uint64_t offset, uint64_t len,
+		      const bufferlist &cmp_data, const bufferlist &wr_data,
+		      librados::AioCompletion *c);
 
     // operations on rbd_id objects
     int get_id(librados::IoCtx *ioctx, const std::string &oid, std::string *id);

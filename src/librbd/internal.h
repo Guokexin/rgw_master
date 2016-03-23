@@ -216,6 +216,10 @@ namespace librbd {
   int metadata_get(ImageCtx *ictx, const std::string &key, std::string *value);
   int metadata_set(ImageCtx *ictx, const std::string &key, const std::string &value);
   int metadata_remove(ImageCtx *ictx, const std::string &key);
+  ssize_t compare_write(ImageCtx *ictx, uint64_t off, size_t len,
+                        const char *buf1, const char *buf2);
+  void aio_compare_write(ImageCtx *ictx, uint64_t off, size_t len,
+                         const char *buf1, const char *buf2, AioCompletion *c);
 
   ssize_t handle_sparse_read(CephContext *cct,
 			     ceph::bufferlist data_bl,
