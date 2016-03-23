@@ -22,7 +22,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <sys/ioctl.h>
-
+#include "include/mscache_expt.h"
 #if defined(__linux__)
 #include <linux/fs.h>
 #endif
@@ -120,6 +120,16 @@ static CompatSet get_fs_supported_compat_set() {
   return compat;
 }
 
+void aio_cache_cb(void* arg)
+{
+  XStore::AioArgs *args = static_cast<XStore::AioArgs*>(arg);
+  XStore *store = static_cast<XStore*>(args->fs);
+  // FIXME
+  if (args->f_len) {
+    store->truncate_and_check(args->fd, args->f_len);
+  }
+  store->aio_callback(args->op, args->osr);
+}
 
 int XStore::peek_journal_fsid(uuid_d *fsid)
 {
@@ -479,7 +489,7 @@ int XStore::lfn_link(coll_t c, coll_t newcid, const ghobject_t& o, const ghobjec
 
 int XStore::lfn_unlink(coll_t cid, const ghobject_t& o,
 			  const SequencerPosition &spos,
-			  bool force_clear_omap, int osr)
+			  bool force_clear_omap, int osrid)
 {
   Index index;
   int r = get_index(cid, &index);
@@ -1527,7 +1537,8 @@ int XStore::mount()
       index->cleanup();
     }
   }
-
+   
+  mscache_modules_init();
   sync_thread.create();
   jwa_thread.create();
 
@@ -1631,6 +1642,8 @@ int XStore::umount()
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     (*it)->stop();
   }
+
+  mscache_modules_exit();
 
   if (fsid_fd >= 0) {
     VOID_TEMP_FAILURE_RETRY(::close(fsid_fd));
@@ -1784,6 +1797,11 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   }
 
   osr->apply_lock.Lock();
+  while (osr->pending_aio.read()) {
+    dout(10) << "_do_op " << *osr << "/" << osr->parent << " wait "
+             << osr->pending_aio.read() << dendl;
+    osr->pending_aio_cond.Wait(osr->apply_lock);
+  }
   Op *o = osr->peek_queue();
   assert(o->state == Op::STATE_ACK ||
          o->state == Op::STATE_INIT ||
@@ -1806,9 +1824,42 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   }
 }
 
+void XStore::aio_callback(Op *o, OpSequencer *osr)
+{
+  // do not conitnue until finish_op
+  osr->apply_lock.Lock();
+  assert(osr->pending_aio.dec() == 0);
+  assert(o->aio_inflight.dec() == 0);
+  dout(10) << "aio _finish_op " << *o << " pending "
+           << o->aio_inflight.read() << dendl;
+
+  assert(o->state != Op::STATE_ACK);
+  {
+    Mutex::Locker l(jwa_lock);
+    if (o->state == Op::STATE_INIT) {
+      o->state = Op::STATE_WRITE;
+    } else if (o->state == Op::STATE_JOURNAL) {
+      o->state = Op::STATE_COMMIT;
+      jwa_queue.push_back(o);
+      jwa_cond.SignalOne();
+    }
+  }
+  osr->pending_aio_cond.Signal();
+  osr->apply_lock.Unlock();  // locked in _do_op
+  dout(10) << "_finish_op put op to jwa_queue " << o << " seq " << o->op
+           << " " << *osr << "/" << osr->parent << dendl;
+}
+
 void XStore::_finish_op(OpSequencer *osr)
 {
   Op *o = osr->peek_queue();
+  dout(10) << "bio _finish_op " << o << " seq " << o->op << " pending "
+           << o->aio_inflight.read() << " " << *osr << "/" << osr->parent << dendl;
+  if (o->aio_inflight.read()) {
+    osr->dequeue();
+    osr->apply_lock.Unlock();  // locked in _do_op
+    return;
+  }
   if (o->state != Op::STATE_ACK) {
     Mutex::Locker l(jwa_lock);
     if (o->state == Op::STATE_INIT) {
@@ -1826,23 +1877,23 @@ void XStore::_finish_op(OpSequencer *osr)
   }
 
   o->state = Op::STATE_DONE;
-
+  
   list<Context*> to_queue;
   o = osr->dequeue(&to_queue);
-
+  
+  dout(5) << "_finish_op " << *o << dendl;
   // finish op by order
   assert(osr->dequeue_inq() == o);
   
-  dout(10) << "_finish_op " << *o << dendl;
   osr->apply_lock.Unlock();  // locked in _do_op
-
+  
   // called with tp lock held
   op_queue_release_throttle(o);
-
+  
   utime_t lat = ceph_clock_now(g_ceph_context);
   lat -= o->start;
   logger->tinc(l_xs_apply_lat, lat);
-
+  
   if (o->onreadable_sync) {
     o->onreadable_sync->complete(0);
   }
@@ -2663,10 +2714,10 @@ unsigned XStore::_do_transaction(
 #ifdef WITH_LTTNG
   const char *osr_name = t.get_osr() ? static_cast<OpSequencer*>(t.get_osr())->get_name().c_str() : "<NULL>";
 #endif
-  int osr = t.get_osr() ? static_cast<OpSequencer*>(t.get_osr())->id : 0;
+  int osrid = t.get_osr() ? static_cast<OpSequencer*>(t.get_osr())->id : 0;
 
   bool wal = o? o->wal : false;
-  dout(10) << "_do_transaction on " << &t << " osr " << osr << " seq " << op_seq 
+  dout(10) << "_do_transaction on " << &t << " osr " << osrid << " seq " << op_seq
            << " trans_num " << trans_num << " wal " << wal << dendl;
 
   Transaction::iterator i = t.begin();
@@ -2726,7 +2777,12 @@ unsigned XStore::_do_transaction(
 
         if (_check_replay_guard(cid, oid, spos) > 0)
           if (replaying || o->state != Op::STATE_ACK || o->wal) {
-            r = _write(cid, oid, off, len, bl, fadvise_flags, osr);
+            if (o && !o->wal) {
+              r = _write(cid, oid, off, len, bl, fadvise_flags, osrid, o,
+                    static_cast<OpSequencer*>(t.get_osr()));
+            } else {
+              r = _write(cid, oid, off, len, bl, fadvise_flags, osrid);
+            } 
           }
           if (!replaying && o->state != Op::STATE_ACK) {
             do_txn_pause = true;
@@ -2743,7 +2799,7 @@ unsigned XStore::_do_transaction(
         uint64_t len = op->len;
         tracepoint(objectstore, zero_enter, osr_name, off, len);
         if (_check_replay_guard(cid, oid, spos) > 0)
-          r = _zero(cid, oid, off, len, osr);
+          r = _zero(cid, oid, off, len, osrid);
         tracepoint(objectstore, zero_exit, r);
       }
       break;
@@ -2772,7 +2828,7 @@ unsigned XStore::_do_transaction(
         const ghobject_t& oid = i.get_oid(op->oid);
         tracepoint(objectstore, remove_enter, osr_name);
         if (_check_replay_guard(cid, oid, spos) > 0)
-          r = _remove(cid, oid, spos, osr);
+          r = _remove(cid, oid, spos, osrid);
         tracepoint(objectstore, remove_exit, r);
       }
       break;
@@ -2937,7 +2993,7 @@ unsigned XStore::_do_transaction(
           break;
         tracepoint(objectstore, coll_remove_enter, osr_name);
         if (_check_replay_guard(ocid, oid, spos) > 0)
-          r = _remove(ocid, oid, spos, osr);
+          r = _remove(ocid, oid, spos, osrid);
         tracepoint(objectstore, coll_remove_exit, r);
       }
       break;
@@ -2952,7 +3008,7 @@ unsigned XStore::_do_transaction(
         r = _collection_add(ocid, ncid, oid, spos);
         if (r == 0 &&
             (_check_replay_guard(ocid, oid, spos) > 0))
-          r = _remove(ocid, oid, spos, osr);
+          r = _remove(ocid, oid, spos, osrid);
         tracepoint(objectstore, coll_move_exit, r);
       }
       break;
@@ -2964,7 +3020,7 @@ unsigned XStore::_do_transaction(
         coll_t newcid = i.get_cid(op->dest_cid);
         ghobject_t newoid = i.get_oid(op->dest_oid);
         tracepoint(objectstore, coll_move_rename_enter);
-        r = _collection_move_rename(oldcid, oldoid, newcid, newoid, spos, osr);
+        r = _collection_move_rename(oldcid, oldoid, newcid, newoid, spos, osrid);
         tracepoint(objectstore, coll_move_rename_exit, r);
       }
       break;
@@ -3281,7 +3337,9 @@ int XStore::direct_read(
   uint64_t r_len = ROUND_UP_TO(len + front_extra, m_block_size);
 
   bptr = buffer::create_page_aligned(r_len);
-  int got = safe_pread(**fd, bptr.c_str(), r_len, r_off);
+  ostringstream oss;
+  oss << oid;
+  int got = mscache_read(fd, oss.str().c_str(), bptr.c_str(), r_len, r_off, fadvise_flags);
   dout(15) << "XStore::direct_read(" << **fd << ") " << offset << "~" << len
            << " " << r_off << "~" << r_len << " got " << got << dendl;
   if (got < 0) {
@@ -3309,10 +3367,12 @@ int XStore::direct_write(
   const bufferlist &bl,
   off_t offset,
   size_t len,
-  uint32_t fadvise_flags)
+  uint32_t fadvise_flags,
+  Op *op,
+  OpSequencer *osr)
 {
   assert(bl.length() == len);
-  int r = 0, got = 0;
+  int got = 0;
   uint64_t front_extra = offset % m_block_size;
   uint64_t front_off = offset - front_extra;
   uint64_t w_off = front_off;
@@ -3364,31 +3424,62 @@ int XStore::direct_write(
         f_len = footer_off + got;
       }
     }
-    got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
+
+    ostringstream oss;
+    oss << oid;
+    if (op && osr) {
+      op->aio_inflight.inc();
+      op->aio_bl.push_back(write_ptr);
+      osr->pending_aio.inc();
+      got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
+          new AioArgs(this, op, osr, f_len, fd), MSCACHE_WRITE_API_ASYNC);
+    } else {
+      got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
+          new AioArgs(this, op, osr), MSCACHE_WRITE_API_SYNC);
+      truncate_and_check(fd, f_len);
+    }
     dout(15) << "XStore::direct_write(" << **fd << ") " << w_off << "~" << front_extra
              << " " << footer_off  << "~" << footer_extra << " f_len " << f_len << dendl;
-    //FIXME
-    if (f_len) {
-      r = ::ftruncate(**fd, f_len);
-      if (r < 0) {
-        r = -errno;
-        dout(5) << "XStore::ftruncate(" << **fd << ") to " << f_len << " r=" << r << dendl;
-        assert(0 == "Unexpected Error");
-      }
-#if 1
-      struct stat st;
-      r = ::fstat(**fd, &st);
-      assert(f_len == st.st_size);
-#endif
-      dout(15) << "XStore::ftruncate(" << **fd << ") to " << f_len << " r=" << r << dendl;
-    }
   } else {
     assert(w_off == (uint64_t)offset && w_len == len);
-    got = safe_pwrite(**fd, bl.buffers().front().c_str(), w_len, w_off);
+    ostringstream oss;
+    oss << oid;
+    if (op && osr) {
+      op->aio_inflight.inc();
+      op->aio_bl.push_back(bl.buffers().front());
+      osr->pending_aio.inc();
+      got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
+          new AioArgs(this, op, osr), MSCACHE_WRITE_API_ASYNC);
+    } else {
+      got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
+          new AioArgs(this, op, osr), MSCACHE_WRITE_API_SYNC);
+    }
   }
 
   if (got < 0) {
     return got;
+  }
+  return 0;
+}
+
+int XStore::truncate_and_check(
+  const FDRef& fd,
+  off_t length)
+{
+  //FIXME
+  if (length) {
+    int r = ::ftruncate(**fd, length);
+    if (r < 0) {
+      r = -errno;
+      dout(5) << "XStore::ftruncate(" << **fd << ") to " << length << " r=" << r << dendl;
+      assert(0 == "Unexpected Error");
+    }
+#if 1
+    struct stat st;
+    r = ::fstat(**fd, &st);
+    assert(length == st.st_size);
+#endif
+    dout(15) << "XStore::ftruncate(" << **fd << ") to " << length << " r=" << r << dendl;
   }
   return 0;
 }
@@ -3553,10 +3644,10 @@ done:
 
 
 int XStore::_remove(coll_t cid, const ghobject_t& oid,
-		       const SequencerPosition &spos, int osr)
+		       const SequencerPosition &spos, int osrid)
 {
   dout(15) << "remove " << cid << "/" << oid << dendl;
-  int r = lfn_unlink(cid, oid, spos, false, osr);
+  int r = lfn_unlink(cid, oid, spos, false, osrid);
   dout(10) << "remove " << cid << "/" << oid << " = " << r << dendl;
   return r;
 }
@@ -3588,7 +3679,7 @@ int XStore::_touch(coll_t cid, const ghobject_t& oid)
 int XStore::_write(coll_t cid, const ghobject_t& oid,
                      uint64_t offset, size_t len,
                      const bufferlist& bl, uint32_t fadvise_flags,
-                     int osr)
+                     int osrid, Op *op, OpSequencer *osr)
 {
   dout(15) << "write " << cid << "/" << oid << " " << offset << "~" << len << dendl;
   int r;
@@ -3603,7 +3694,7 @@ int XStore::_write(coll_t cid, const ghobject_t& oid,
   }
     
   // write
-  r = direct_write(fd, oid, bl, offset, len, fadvise_flags);
+  r = direct_write(fd, oid, bl, offset, len, fadvise_flags, op, osr);
   if (r == 0)
     r = bl.length();
 
@@ -3619,7 +3710,7 @@ int XStore::_write(coll_t cid, const ghobject_t& oid,
   return r;
 }
 
-int XStore::_zero(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, int osr)
+int XStore::_zero(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, int osrid)
 {
   dout(15) << "zero " << cid << "/" << oid << " " << offset << "~" << len << dendl;
   int ret = 0;
@@ -3664,7 +3755,7 @@ int XStore::_zero(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len
     bp.zero();
     bufferlist bl;
     bl.push_back(bp);
-    ret = _write(cid, oid, offset, len, bl, 0, osr);
+    ret = _write(cid, oid, offset, len, bl, 0, osrid);
   }
 
  out:
@@ -4045,7 +4136,7 @@ void XStore::sync_entry()
   again:
     fin.swap(sync_waiters);
     lock.Unlock();
-    
+
     if (apply_manager.commit_start()) {
       utime_t start = ceph_clock_now(g_ceph_context);
       uint64_t cp = apply_manager.get_committing_seq();
@@ -4909,7 +5000,7 @@ int XStore::_collection_setattrs(coll_t cid, map<string,bufferptr>& aset)
 }
 
 int XStore::_collection_remove_recursive(const coll_t &cid,
-					    const SequencerPosition &spos, int osr)
+					    const SequencerPosition &spos, int osrid)
 {
   struct stat st;
   int r = collection_stat(cid, &st);
@@ -4929,7 +5020,7 @@ int XStore::_collection_remove_recursive(const coll_t &cid,
 	 i != objects.end();
 	 ++i) {
       assert(_check_replay_guard(cid, *i, spos));
-      r = _remove(cid, *i, spos, osr);
+      r = _remove(cid, *i, spos, osrid);
       if (r < 0)
 	return r;
     }
@@ -5460,7 +5551,7 @@ int XStore::_collection_add(coll_t c, coll_t oldcid, const ghobject_t& o,
 
 int XStore::_collection_move_rename(coll_t oldcid, const ghobject_t& oldoid,
 				       coll_t c, const ghobject_t& o,
-				       const SequencerPosition& spos, int osr)
+				       const SequencerPosition& spos, int osrid)
 {
   dout(15) << __func__ << " " << c << "/" << o << " from " << oldcid << "/" << oldoid << dendl;
   int r = 0;
@@ -5526,7 +5617,7 @@ int XStore::_collection_move_rename(coll_t oldcid, const ghobject_t& oldoid,
     fd = FDRef();
 
     if (r == 0)
-      r = lfn_unlink(oldcid, oldoid, spos, true, osr);
+      r = lfn_unlink(oldcid, oldoid, spos, true, osrid);
 
     if (r == 0)
       r = lfn_open(c, o, 0, &fd);
@@ -5545,7 +5636,7 @@ int XStore::_collection_move_rename(coll_t oldcid, const ghobject_t& oldoid,
  out_rm_src:
   // remove source
   if (_check_replay_guard(oldcid, oldoid, spos) > 0) {
-    r = lfn_unlink(oldcid, oldoid, spos, true, osr);
+    r = lfn_unlink(oldcid, oldoid, spos, true, osrid);
   }
 
   dout(10) << __func__ << " " << c << "/" << o << " from " << oldcid << "/" << oldoid

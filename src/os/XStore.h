@@ -322,6 +322,20 @@ public:
       STATE_ACK      = 4,
       STATE_DONE     = 5,
     } state;
+    atomic_t aio_inflight;
+    list<bufferptr> aio_bl;
+  };
+
+  struct AioArgs {
+    XStore *fs;
+    Op *op;
+    OpSequencer *osr;
+    uint64_t f_len;
+    const FDRef fd;
+    AioArgs(XStore *fs, Op *op, OpSequencer *osr, uint64_t f, const FDRef& fd):
+      fs(fs), op(op), osr(osr), f_len(f), fd(fd) {}
+    AioArgs(XStore *fs, Op *op, OpSequencer *osr):
+      fs(fs), op(op), osr(osr), f_len(0) {}
   };
 
   friend ostream& operator<<(ostream& out, const Op& o)
@@ -345,6 +359,9 @@ public:
     Sequencer *parent;
     Mutex apply_lock;  // for apply mutual exclusion
     int id;
+    atomic_t pending_aio;
+    Cond pending_aio_cond;
+
     Mutex pending_lock;
     atomic_t pending_wal;
     Cond pending_cond;
@@ -553,6 +570,7 @@ public:
 	       Context *ondisk, Context *onreadable, Context *onreadable_sync,
 	       TrackedOpRef osd_op,
                OpSequencer *osr);
+  void aio_callback(Op* op, OpSequencer *o);
   void queue_op(OpSequencer *osr, Op *o);
   void op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle = NULL);
   void op_queue_release_throttle(Op *o);
@@ -569,6 +587,7 @@ public:
 public:
   int lfn_find(const ghobject_t& oid, const Index& index, 
                                   IndexedPath *path = NULL);
+  int truncate_and_check(const FDRef& fd, off_t length);
   int lfn_truncate(coll_t cid, const ghobject_t& oid, off_t length);
   int lfn_stat(const coll_t& cid, const ghobject_t& oid, struct stat *buf);
   int lfn_open(
@@ -581,7 +600,7 @@ public:
   void lfn_close(FDRef fd);
   int lfn_link(coll_t c, coll_t newcid, const ghobject_t& o, const ghobject_t& newoid) ;
   int lfn_unlink(coll_t cid, const ghobject_t& o, const SequencerPosition &spos,
-		 bool force_clear_omap, int osr);
+		 bool force_clear_omap, int osrid);
 
 public:
   XStore(const std::string &base, const std::string &jdev,
@@ -636,6 +655,9 @@ public:
   int _do_transactions(
     list<Transaction*> &tls, uint64_t op_seq, Op* o,
     ThreadPool::TPHandle *handle);
+  int do_transactions(list<Transaction*> &tls, uint64_t op_seq, Op *o) {
+    return _do_transactions(tls, op_seq, o, 0);
+  }
   int do_transactions(list<Transaction*> &tls, uint64_t op_seq) {
     return _do_transactions(tls, op_seq, NULL, 0);
   }
@@ -724,13 +746,16 @@ public:
     const bufferlist &bl,
     off_t offset,
     size_t len,
-    uint32_t op_flags = 0);
+    uint32_t op_flags = 0,
+    Op *op = NULL,
+    OpSequencer *osr = NULL);
   int fiemap(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, bufferlist& bl);
 
   int _touch(coll_t cid, const ghobject_t& oid);
   int _write(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len,
-	      const bufferlist& bl, uint32_t fadvise_flags, int osr);
-  int _zero(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, int osr);
+	      const bufferlist& bl, uint32_t fadvise_flags, int osrid,
+              Op *op = NULL, OpSequencer *osr = NULL);
+  int _zero(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, int osrid);
   int _truncate(coll_t cid, const ghobject_t& oid, uint64_t size);
   int _clone(coll_t cid, const ghobject_t& oldoid, const ghobject_t& newoid,
 	     const SequencerPosition& spos);
@@ -754,7 +779,7 @@ public:
   int _do_copy_range(FDRef& from, const ghobject_t& soid,
                      FDRef& to, const ghobject_t& doid,
                      uint64_t srcoff, uint64_t len, uint64_t dstoff);
-  int _remove(coll_t cid, const ghobject_t& oid, const SequencerPosition &spos, int osr);
+  int _remove(coll_t cid, const ghobject_t& oid, const SequencerPosition &spos, int osrid);
 
   int _fgetattr(int fd, const char* name, bufferptr& bp, int* chunks = NULL);
   int _fgetattrs(int fd, map<string, pair<bufferptr, int> >& aset);
@@ -809,7 +834,7 @@ public:
   int _collection_rmattr(coll_t c, const char *name);
   int _collection_setattrs(coll_t cid, map<string,bufferptr> &aset);
   int _collection_remove_recursive(const coll_t &cid,
-				   const SequencerPosition &spos, int osr);
+				   const SequencerPosition &spos, int osrid);
 
   // collections
   int list_collections(vector<coll_t>& ls);
@@ -859,7 +884,7 @@ public:
 		      const SequencerPosition& spos);
   int _collection_move_rename(coll_t oldcid, const ghobject_t& oldoid,
 			      coll_t c, const ghobject_t& o,
-			      const SequencerPosition& spos, int osr);
+			      const SequencerPosition& spos, int osrid);
 
   int _set_alloc_hint(coll_t cid, const ghobject_t& oid,
                       uint64_t expected_object_size,
