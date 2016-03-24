@@ -529,6 +529,7 @@ public:
   const int apply_finisher_num;
   vector<Finisher*> ondisk_finishers;
   vector<Finisher*> apply_finishers;
+  Finisher* callback_finisher;
 
   ThreadPool op_tp;
   struct OpWQ : public ThreadPool::WorkQueue<OpSequencer> {
@@ -570,7 +571,7 @@ public:
 	       Context *ondisk, Context *onreadable, Context *onreadable_sync,
 	       TrackedOpRef osd_op,
                OpSequencer *osr);
-  void aio_callback(Op* op, OpSequencer *o);
+  void aio_callback(AioArgs *args);
   void queue_op(OpSequencer *osr, Op *o);
   void op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle = NULL);
   void op_queue_release_throttle(Op *o);

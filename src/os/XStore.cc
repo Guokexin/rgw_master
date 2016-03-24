@@ -120,15 +120,22 @@ static CompatSet get_fs_supported_compat_set() {
   return compat;
 }
 
-void aio_cache_cb(void* arg)
-{
-  XStore::AioArgs *args = static_cast<XStore::AioArgs*>(arg);
-  XStore *store = static_cast<XStore*>(args->fs);
-  // FIXME
-  if (args->f_len) {
-    store->truncate_and_check(args->fd, args->f_len);
+struct C_AioCallBack : public Context {
+  void* args;
+  C_AioCallBack(void *args): args(args) {}
+
+  void finish(int r) {
+    // FIXME
+    XStore::AioArgs *aioargs = static_cast<XStore::AioArgs*>(args);
+    XStore *store = aioargs->fs;
+    store->aio_callback(aioargs);
   }
-  store->aio_callback(args->op, args->osr);
+};
+
+void aio_cache_cb(void* args)
+{
+  XStore *store = ((XStore::AioArgs*)args)->fs;
+  store->callback_finisher->queue(new C_AioCallBack(args));
 }
 
 int XStore::peek_journal_fsid(uuid_d *fsid)
@@ -155,7 +162,7 @@ void XStore::FSPerfTracker::update_from_perfcounters(
 ostream& operator<<(ostream& out, const XStore::OpSequencer& s)
 {
   assert(&out);
-  return out << *s.parent;
+  return out << *s.parent << " aio " << s.pending_aio.read() << " ";
 }
 
 int XStore::get_cdir(const coll_t& cid, char *s, int len) 
@@ -631,6 +638,7 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
     Finisher *f = new Finisher(g_ceph_context, oss.str());
     apply_finishers.push_back(f);
   }
+  callback_finisher = new Finisher(g_ceph_context, "finisher-callback");
   ostringstream oss;
   oss << basedir << "/current";
   current_fn = oss.str();
@@ -694,6 +702,7 @@ XStore::~XStore()
     delete *it;
     *it = NULL;
   }
+  delete callback_finisher;
   g_ceph_context->_conf->remove_observer(this);
   g_ceph_context->get_perfcounters_collection()->remove(logger);
 
@@ -1582,6 +1591,7 @@ int XStore::mount()
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     (*it)->start();
   }
+  callback_finisher->start();
 
   timer.init();
 
@@ -1642,6 +1652,7 @@ int XStore::umount()
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     (*it)->stop();
   }
+  callback_finisher->stop();
 
   mscache_modules_exit();
 
@@ -1797,11 +1808,6 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   }
 
   osr->apply_lock.Lock();
-  while (osr->pending_aio.read()) {
-    dout(10) << "_do_op " << *osr << "/" << osr->parent << " wait "
-             << osr->pending_aio.read() << dendl;
-    osr->pending_aio_cond.Wait(osr->apply_lock);
-  }
   Op *o = osr->peek_queue();
   assert(o->state == Op::STATE_ACK ||
          o->state == Op::STATE_INIT ||
@@ -1824,15 +1830,18 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   }
 }
 
-void XStore::aio_callback(Op *o, OpSequencer *osr)
+void XStore::aio_callback(AioArgs *args)
 {
+  Op *o = args->op;
+  OpSequencer *osr = args->osr;
   // do not conitnue until finish_op
   osr->apply_lock.Lock();
-  assert(osr->pending_aio.dec() == 0);
+  if (args->f_len) {
+    truncate_and_check(args->fd, args->f_len);
+  }
   assert(o->aio_inflight.dec() == 0);
   dout(10) << "aio _finish_op " << *o << " pending "
            << o->aio_inflight.read() << dendl;
-
   assert(o->state != Op::STATE_ACK);
   {
     Mutex::Locker l(jwa_lock);
@@ -1844,23 +1853,38 @@ void XStore::aio_callback(Op *o, OpSequencer *osr)
       jwa_cond.SignalOne();
     }
   }
-  osr->pending_aio_cond.Signal();
+  osr->pending_lock.Lock();
+  if (osr->pending_aio.dec() == 0) {
+    osr->pending_aio_cond.Signal();
+  }
+  osr->pending_lock.Unlock();
+
   osr->apply_lock.Unlock();  // locked in _do_op
-  dout(10) << "_finish_op put op to jwa_queue " << o << " seq " << o->op
-           << " " << *osr << "/" << osr->parent << dendl;
+  dout(10) << "_finish_op put op to jwa_queue " << *o
+           << " " << *osr << dendl;
+  delete args;
 }
 
 void XStore::_finish_op(OpSequencer *osr)
 {
   Op *o = osr->peek_queue();
-  dout(10) << "bio _finish_op " << o << " seq " << o->op << " pending "
-           << o->aio_inflight.read() << " " << *osr << "/" << osr->parent << dendl;
+  dout(10) << "bio _finish_op " << *o << " inflight "
+           << o->aio_inflight.read() << " " << *osr << dendl;
   if (o->aio_inflight.read()) {
     osr->dequeue();
     osr->apply_lock.Unlock();  // locked in _do_op
     return;
   }
   if (o->state != Op::STATE_ACK) {
+    if (!o->wal) {
+      // decrease the pending aio if non-wal do any aio
+      osr->pending_lock.Lock();
+      if (osr->pending_aio.dec() == 0) {
+        osr->pending_aio_cond.Signal();
+      }
+      osr->pending_lock.Unlock();
+    }
+
     Mutex::Locker l(jwa_lock);
     if (o->state == Op::STATE_INIT) {
       o->state = Op::STATE_WRITE;
@@ -1871,8 +1895,8 @@ void XStore::_finish_op(OpSequencer *osr)
     }
     osr->dequeue();
     osr->apply_lock.Unlock();  // locked in _do_op
-    dout(10) << "_finish_op put op to jwa_queue " << o << " seq " << o->op 
-             << " " << *osr << "/" << osr->parent << dendl;
+    dout(10) << "_finish_op put op to jwa_queue " << *o
+             << " " << *osr << dendl;
     return;
   }
 
@@ -2328,6 +2352,15 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
       jtls = &(o->tls);
       osr->pending_wal.inc();
       logger->inc(l_xs_wal_op);
+
+      osr->pending_lock.Lock();
+      while (osr->pending_aio.read()) {
+        dout(10) << "queue_transactions wait " << *osr << dendl;
+        osr->pending_aio_cond.Wait(osr->pending_lock);
+      }
+      osr->pending_lock.Unlock();
+    } else {
+      osr->pending_aio.inc();
     }
     op_queue_reserve_throttle(o, handle);
     journal->throttle();
@@ -3339,9 +3372,9 @@ int XStore::direct_read(
   bptr = buffer::create_page_aligned(r_len);
   ostringstream oss;
   oss << oid;
-  int got = mscache_read(fd, oss.str().c_str(), bptr.c_str(), r_len, r_off, fadvise_flags);
   dout(15) << "XStore::direct_read(" << **fd << ") " << offset << "~" << len
-           << " " << r_off << "~" << r_len << " got " << got << dendl;
+           << " " << r_off << "~" << r_len << dendl;
+  int got = mscache_read(fd, oss.str().c_str(), bptr.c_str(), r_len, r_off, fadvise_flags);
   if (got < 0) {
     return got;
   }
@@ -3430,12 +3463,11 @@ int XStore::direct_write(
     if (op && osr) {
       op->aio_inflight.inc();
       op->aio_bl.push_back(write_ptr);
-      osr->pending_aio.inc();
       got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
           new AioArgs(this, op, osr, f_len, fd), MSCACHE_WRITE_API_ASYNC);
     } else {
       got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
-          new AioArgs(this, op, osr), MSCACHE_WRITE_API_SYNC);
+          NULL, MSCACHE_WRITE_API_SYNC);
       truncate_and_check(fd, f_len);
     }
     dout(15) << "XStore::direct_write(" << **fd << ") " << w_off << "~" << front_extra
@@ -3447,12 +3479,11 @@ int XStore::direct_write(
     if (op && osr) {
       op->aio_inflight.inc();
       op->aio_bl.push_back(bl.buffers().front());
-      osr->pending_aio.inc();
       got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
           new AioArgs(this, op, osr), MSCACHE_WRITE_API_ASYNC);
     } else {
       got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
-          new AioArgs(this, op, osr), MSCACHE_WRITE_API_SYNC);
+          NULL, MSCACHE_WRITE_API_SYNC);
     }
   }
 
@@ -3474,12 +3505,12 @@ int XStore::truncate_and_check(
       dout(5) << "XStore::ftruncate(" << **fd << ") to " << length << " r=" << r << dendl;
       assert(0 == "Unexpected Error");
     }
+    dout(15) << "XStore::ftruncate(" << **fd << ") to " << length << " r=" << r << dendl;
 #if 1
     struct stat st;
     r = ::fstat(**fd, &st);
     assert(length == st.st_size);
 #endif
-    dout(15) << "XStore::ftruncate(" << **fd << ") to " << length << " r=" << r << dendl;
   }
   return 0;
 }
@@ -4284,6 +4315,7 @@ void XStore::_flush_op_queue()
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     (*it)->wait_for_empty();
   }
+  callback_finisher->wait_for_empty();
 }
 
 /*
@@ -4312,6 +4344,7 @@ void XStore::flush()
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     (*it)->wait_for_empty();
   }
+  callback_finisher->wait_for_empty();
 
   _flush_op_queue();
   dout(10) << "flush complete" << dendl;
