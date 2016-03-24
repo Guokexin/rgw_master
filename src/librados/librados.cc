@@ -100,6 +100,8 @@ static void set_op_flags(::ObjectOperation *o, int flags)
     rados_flags |= CEPH_OSD_OP_FLAG_FADVISE_DONTNEED;
   if (flags & LIBRADOS_OP_FLAG_FADVISE_NOCACHE)
     rados_flags |= CEPH_OSD_OP_FLAG_FADVISE_NOCACHE;
+  if (flags & LIBRADOS_OP_FLAG_FADVISE_PREFETCH)
+    rados_flags |= CEPH_OSD_OP_FLAG_FADVISE_PREFETCH;
   o->set_last_op_flags(rados_flags);
 }
 

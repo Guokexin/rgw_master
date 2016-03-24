@@ -41,6 +41,13 @@ if WITH_LIBZFS
 libos_la_SOURCES += os/ZFSFileStoreBackend.cc
 endif
 
+#if WITH_MSCACHE
+libos_la_SOURCES += mscache/backend_aio.cpp
+libos_la_SOURCES += mscache/rcache.cpp
+libos_la_SOURCES += mscache/mscache_bm.cpp
+libos_la_SOURCES += mscache/mscache.cpp
+#endif
+
 libos_la_CXXFLAGS = ${AM_CXXFLAGS}
 libos_la_LIBADD = $(LIBOS_TYPES)
 if WITH_LTTNG
