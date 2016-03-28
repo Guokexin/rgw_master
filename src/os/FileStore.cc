@@ -2688,6 +2688,30 @@ unsigned FileStore::_do_transaction(
         tracepoint(objectstore, omap_rmkeys_exit, r);
       }
       break;
+    case Transaction::OP_PGMETA_SETKEYS:
+      {
+        const coll_t& cid = i.get_cid(op->cid);
+        const ghobject_t& oid = i.get_oid(op->oid);
+        map<string, bufferlist> aset;
+        i.decode_attrset(aset);
+        tracepoint(objectstore, omap_setkeys_enter, osr_name);
+        r = _omap_setkeys(cid, oid, aset, spos);
+        tracepoint(objectstore, omap_setkeys_exit, r);
+      }
+      break;
+    case Transaction::OP_PGMETA_RMKEYS:
+      {
+        const coll_t& cid = i.get_cid(op->cid);
+        const ghobject_t& oid = i.get_oid(op->oid);
+        set<string> keys;
+        i.decode_keyset(keys);
+        tracepoint(objectstore, omap_rmkeys_enter, osr_name);
+        r = _omap_rmkeys(cid, oid, keys, spos);
+        tracepoint(objectstore, omap_rmkeys_exit, r);
+      }
+      break;
+    case Transaction::OP_WRITE_AHEAD_LOG:
+      break;
     case Transaction::OP_OMAP_RMKEYRANGE:
       {
         coll_t cid = i.get_cid(op->cid);
