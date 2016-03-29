@@ -3880,6 +3880,8 @@ reprotect_and_return_err:
 
     uint64_t clip_len = len;
     snapid_t snap_id;
+    ::SnapContext snapc;
+    uint64_t overlap = 0;
     {
       // prevent image size from changing between computing clip and recording
       // pending async operation
@@ -3891,10 +3893,19 @@ reprotect_and_return_err:
       }
 
       snap_id = ictx->snap_id;
+      snapc = ictx->snapc;
+      ictx->parent_lock.get_read();
+      ictx->get_parent_overlap(ictx->snap_id, &overlap);
+      ictx->parent_lock.put_read();
+
       if (snap_id != CEPH_NOSNAP || ictx->read_only) {
         c->fail(cct, -EROFS);
         return;
       }
+
+      ldout(cct, 20) << "  parent overlap " << overlap << dendl;
+
+      c->init_time(ictx, AIO_TYPE_WRITE);
     }
 
     if (ictx->image_watcher->is_lock_supported() &&
@@ -3927,16 +3938,20 @@ reprotect_and_return_err:
       }
 
       C_AioWrite *req_comp = new C_AioWrite(cct, c);
-      librados::AioCompletion *rados_completion =
-	librados::Rados::aio_create_completion(req_comp, NULL, rados_ctx_cb);
-      r = cls_client::compare_write(&ictx->data_ctx, p->oid.name, p->offset,
-	                            p->length, bl1, bl2, rados_completion);
-      rados_completion->release();
-      if (r < 0) {
-        c->fail(cct, r);
-        return;
-      }
+      vector<pair<uint64_t,uint64_t> > objectx;
+      Striper::extent_to_file(ictx->cct, &ictx->layout,
+      		      p->objectno, 0, ictx->layout.fl_object_size,
+      		      objectx);
+      uint64_t object_overlap = ictx->prune_parent_extents(objectx, overlap);
+      
+      AioCompareWrite *req = new AioCompareWrite(ictx, p->oid.name,
+	  p->objectno, p->offset, objectx, object_overlap, bl1, bl2,
+	  snapc, snap_id, req_comp);
       c->add_request();
+      
+      if (!ictx->io_limits_intercept(req, true)) {
+        req->send();
+      }
     }
 
     if (ictx->object_cacher) {

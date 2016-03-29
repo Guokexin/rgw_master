@@ -219,6 +219,37 @@ namespace librbd {
     int m_op_flags;
   };
 
+  class AioCompareWrite : public AbstractWrite {
+  public:
+    AioCompareWrite(ImageCtx *ictx, const std::string &oid,
+	            uint64_t object_no, uint64_t object_off,
+	            vector<pair<uint64_t,uint64_t> >& objectx,
+		    uint64_t object_overlap, const ceph::bufferlist &compare_data,
+		    const ceph::bufferlist &write_data, const ::SnapContext &snapc,
+	            librados::snap_t snap_id, Context *completion)
+      : AbstractWrite(ictx, oid,
+		      object_no, object_off, write_data.length(),
+		      objectx, object_overlap,
+		      snapc, snap_id,
+		      completion, false),
+	m_compare_data(compare_data), m_write_data(write_data), m_op_flags(0) {
+    }
+    virtual ~AioCompareWrite() {}
+
+    void set_op_flags(int op_flags) {
+      m_op_flags = op_flags;
+    }
+  protected:
+    virtual void add_write_ops(librados::ObjectWriteOperation *wr);
+    virtual void pre_object_map_update(uint8_t *new_state) {
+      *new_state = OBJECT_EXISTS;
+    }
+
+  private:
+    ceph::bufferlist m_compare_data, m_write_data;
+    int m_op_flags;
+  };
+
   class AioRemove : public AbstractWrite {
   public:
     AioRemove(ImageCtx *ictx, const std::string &oid,
