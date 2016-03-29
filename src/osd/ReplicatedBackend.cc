@@ -1364,13 +1364,18 @@ void ReplicatedBackend::calc_head_subsets(
   dout(10) << "calc_head_subsets " << head
 	   << " clone_overlap " << snapset.clone_overlap << dendl;
 
-  struct stat st;
-  int r = store->stat(coll, obc->obs.oi.soid, &st);
-  assert(r >= 0);
-  if (obc->obs.oi.size != st.st_size) {
-    derr << __func__ << " meta data mismatch oid " << head << " snapset " << snapset << " oid " << obc->obs.oi << dendl;
+  uint64_t size = obc->obs.oi.size;
+  if (store->get_type() == "xstore") {
+    struct stat st;
+    int r = store->stat(coll, obc->obs.oi.soid, &st);
+    assert(r >= 0);
+    if (obc->obs.oi.size != st.st_size) {
+      derr << __func__ << " meta data mismatch oid " << head
+           << " oi size " << obc->obs.oi.size << " != " << st.st_size
+           << " snapset " << snapset << " oi " << obc->obs.oi << dendl;
+    }
+    size = st.st_size;
   }
-  uint64_t size = st.st_size;
   if (size)
     data_subset.insert(0, size);
 
@@ -1665,14 +1670,21 @@ void ReplicatedBackend::prep_push(ObjectContextRef obc,
 			     PushOp *pop)
 {
   interval_set<uint64_t> data_subset;
-  struct stat st;
-  int r = store->stat(coll, soid, &st);
-  assert(r >= 0);
-  if (obc->obs.oi.size != st.st_size) {
-    derr << __func__ << " meta data mismatch oid " << soid << " oid " << obc->obs.oi << dendl;
+  if (store->get_type() != "xstore") {
+    if (obc->obs.oi.size)
+      data_subset.insert(0, obc->obs.oi.size);
+  } else {
+    struct stat st;
+    int r = store->stat(coll, soid, &st);
+    assert(r >= 0);
+    if (obc->obs.oi.size != st.st_size) {
+      derr << __func__ << " meta data mismatch oid " << soid
+           << " oi size " << obc->obs.oi.size << " != " << st.st_size
+           << " oi " << obc->obs.oi << dendl;
+    }
+    if (st.st_size)
+      data_subset.insert(0, st.st_size);
   }
-  if (st.st_size)
-    data_subset.insert(0, st.st_size);
   map<hobject_t, interval_set<uint64_t> > clone_subsets;
 
   prep_push(obc, soid, peer,
