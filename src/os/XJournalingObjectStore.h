@@ -22,7 +22,7 @@
 
 class XJournalingObjectStore : public ObjectStore {
 protected:
-  Journal *journal;
+  XJournal *journal;
   Finisher finisher;
 
 
@@ -47,7 +47,7 @@ protected:
   } submit_manager;
 
   class ApplyManager {
-    Journal *&journal;
+    XJournal *&journal;
     Finisher &finisher;
 
     Mutex apply_lock;
@@ -61,7 +61,7 @@ protected:
     bool replaying;
 
   public:
-    ApplyManager(Journal *&j, Finisher &f) :
+    ApplyManager(XJournal *&j, Finisher &f) :
       journal(j), finisher(f),
       apply_lock("JOS::ApplyManager::apply_lock", false, true, false, g_ceph_context),
       open_ops(0),

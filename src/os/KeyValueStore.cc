@@ -1459,26 +1459,6 @@ unsigned KeyValueStore::_do_transaction(Transaction& transaction,
         r = _omap_rmkeys(cid, oid, keys, t);
       }
       break;
-    case Transaction::OP_PGMETA_SETKEYS:
-      {
-        coll_t cid = i.get_cid(op->cid);
-        ghobject_t oid = i.get_oid(op->oid);
-        map<string, bufferlist> aset;
-        i.decode_attrset(aset);
-        r = _omap_setkeys(cid, oid, aset, t);
-      }
-      break;
-    case Transaction::OP_PGMETA_RMKEYS:
-      {
-        coll_t cid = i.get_cid(op->cid);
-        ghobject_t oid = i.get_oid(op->oid);
-        set<string> keys;
-        i.decode_keyset(keys);
-        r = _omap_rmkeys(cid, oid, keys, t);
-      }
-      break;
-    case Transaction::OP_WRITE_AHEAD_LOG:
-      break;
     case Transaction::OP_OMAP_RMKEYRANGE:
       {
         coll_t cid = i.get_cid(op->cid);

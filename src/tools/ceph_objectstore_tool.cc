@@ -761,8 +761,7 @@ int mark_pg_for_removal(ObjectStore *fs, spg_t pgid, ObjectStore::Transaction *t
     cout << "setting '_remove' omap key" << std::endl;
     map<string,bufferlist> values;
     ::encode((char)1, values["_remove"]);
-    t->pgmeta_setkeys(coll, pgmeta_oid, values);
-    t->do_wal();
+    t->omap_setkeys(coll, pgmeta_oid, values);
 
   }
   return 0;
@@ -841,8 +840,7 @@ int write_info(ObjectStore::Transaction &t, epoch_t epoch, pg_info_t &info,
     true, true);
   if (ret < 0) ret = -ret;
   if (ret) cerr << "Failed to write info" << std::endl;
-  t.pgmeta_setkeys(coll, pgmeta_oid, km);
-  t.do_wal();
+  t.omap_setkeys(coll, pgmeta_oid, km);
   return ret;
 }
 
@@ -856,8 +854,7 @@ int write_pg(ObjectStore::Transaction &t, epoch_t epoch, pg_info_t &info,
   coll_t coll(info.pgid);
   map<string,bufferlist> km;
   PGLog::write_log(t, &km, log, coll, info.pgid.make_pgmeta_oid(), divergent_priors, true);
-  t.pgmeta_setkeys(coll, info.pgid.make_pgmeta_oid(), km);
-  t.do_wal();
+  t.omap_setkeys(coll, info.pgid.make_pgmeta_oid(), km);
   return 0;
 }
 
@@ -1220,8 +1217,7 @@ int get_omap(ObjectStore *store, coll_t coll, ghobject_t hoid,
 
   if (debug)
     cerr << "\tomap: size " << os.omap.size() << std::endl;
-  t->pgmeta_setkeys(coll, hoid, os.omap);
-  t->do_wal();
+  t->omap_setkeys(coll, hoid, os.omap);
   return 0;
 }
 
@@ -1823,8 +1819,7 @@ int do_import(ObjectStore *store, OSDSuperblock& sb)
   // mark this coll for removal until we're done
   map<string,bufferlist> values;
   ::encode((char)1, values["_remove"]);
-  t->pgmeta_setkeys(coll, pgid.make_pgmeta_oid(), values);
-  t->do_wal();
+  t->omap_setkeys(coll, pgid.make_pgmeta_oid(), values);
 
   store->apply_transaction(*t);
   delete t;
@@ -2183,8 +2178,7 @@ int do_set_omap(ObjectStore *store, coll_t coll, ghobject_t &ghobj, string key, 
 
   t->touch(coll, ghobj);
 
-  t->pgmeta_setkeys(coll, ghobj, attrset);
-  t->do_wal();
+  t->omap_setkeys(coll, ghobj, attrset);
 
   store->apply_transaction(*t);
   return 0;
@@ -2430,8 +2424,18 @@ int main(int argc, char **argv)
     cerr << "Must provide --data-path" << std::endl;
     usage(desc);
   }
+  global_init(
+    NULL, ceph_options, CEPH_ENTITY_TYPE_OSD,
+    CODE_ENVIRONMENT_UTILITY_NODOUT, 0);
+    //CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
+  common_init_finish(g_ceph_context);
+  g_conf = g_ceph_context->_conf;
   if (!vm.count("type")) {
-    type = "filestore";
+    if (g_conf->osd_objectstore == "xstore") {
+      type = "xstore";
+    } else {
+      type = "filestore";
+    }
   }
   if (type == "filestore" && !vm.count("journal-path")) {
     cerr << "Must provide --journal-path" << std::endl;
@@ -2499,12 +2503,6 @@ int main(int argc, char **argv)
   if (vm.count("skip-mount-omap"))
     flags |= SKIP_MOUNT_OMAP;
 
-  global_init(
-    NULL, ceph_options, CEPH_ENTITY_TYPE_OSD,
-    CODE_ENVIRONMENT_UTILITY_NODOUT, 0);
-    //CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
-  common_init_finish(g_ceph_context);
-  g_conf = g_ceph_context->_conf;
   if (debug) {
     g_conf->set_val_or_die("log_to_stderr", "true");
     g_conf->set_val_or_die("err_to_stderr", "true");

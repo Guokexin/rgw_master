@@ -1834,14 +1834,14 @@ void XStore::aio_callback(AioArgs *args)
 {
   Op *o = args->op;
   OpSequencer *osr = args->osr;
+  dout(10) << "aio _finish_op " << *osr << " " << *o << " pending "
+           << o->aio_inflight.read() << dendl;
   // do not conitnue until finish_op
   osr->apply_lock.Lock();
   if (args->f_len) {
     truncate_and_check(args->fd, args->f_len);
   }
   assert(o->aio_inflight.dec() == 0);
-  dout(10) << "aio _finish_op " << *o << " pending "
-           << o->aio_inflight.read() << dendl;
   assert(o->state != Op::STATE_ACK);
   {
     Mutex::Locker l(jwa_lock);
@@ -2054,6 +2054,11 @@ bool XStore::get_replay_txns(list<Transaction*>& tls,
         
       case Transaction::OP_WRITE:
         {
+          const coll_t& cid = i.get_cid(op->cid);
+          if (cid.is_meta()) {
+            delete jtran;
+            return true;
+          }
           bufferlist bl;
           i.decode_bl(bl);
         }
@@ -2170,17 +2175,11 @@ bool XStore::get_replay_txns(list<Transaction*>& tls,
         break;
       case Transaction::OP_OMAP_SETKEYS:
         {
-          map<string, bufferlist> aset;
-          i.decode_attrset(aset);
-        }
-        break;
-      case Transaction::OP_PGMETA_SETKEYS:
-        {
           const coll_t& cid = i.get_cid(op->cid);
           const ghobject_t& oid = i.get_oid(op->oid);
           map<string, bufferlist> aset;
           i.decode_attrset(aset);
-          jtran->pgmeta_setkeys(cid, oid, aset);
+          jtran->omap_setkeys(cid, oid, aset);
         }
         break;
       case Transaction::OP_OMAP_RMKEYS:
@@ -2190,15 +2189,6 @@ bool XStore::get_replay_txns(list<Transaction*>& tls,
           set<string> keys;
           i.decode_keyset(keys);
           jtran->omap_rmkeys(cid, oid, keys);
-        }
-        break;
-      case Transaction::OP_PGMETA_RMKEYS:
-        {
-          const coll_t& cid = i.get_cid(op->cid);
-          const ghobject_t& oid = i.get_oid(op->oid);
-          set<string> keys;
-          i.decode_keyset(keys);
-          jtran->pgmeta_rmkeys(cid, oid, keys);
         }
         break;
       case Transaction::OP_OMAP_RMKEYRANGE:
@@ -2260,7 +2250,7 @@ bool XStore::_should_wal(list<Transaction*> &tls)
   }
   if (!wal) {
     uint32_t not_wal_ops[] = {Transaction::OP_WRITE, Transaction::OP_SETATTRS,
-      Transaction::OP_PGMETA_SETKEYS};
+      Transaction::OP_OMAP_SETKEYS};
     char* op_buffer_p = ops_bl.get_contiguous(0, ops * sizeof(Transaction::Op));
     char* op_p = op_buffer_p;
  
@@ -2269,10 +2259,9 @@ bool XStore::_should_wal(list<Transaction*> &tls)
       op_p += sizeof(Transaction::Op);
       if (i == 0 && op->op == Transaction::OP_SETALLOCHINT)
         continue;
-      if (i == 2 && op->op == Transaction::OP_PGMETA_RMKEYS)
+      if (i == 2 && op->op == Transaction::OP_OMAP_RMKEYS)
         continue;
-      if (op->op == Transaction::OP_WRITE_AHEAD_LOG ||
-          j >= sizeof(not_wal_ops) / sizeof(uint32_t) ||
+      if (j >= sizeof(not_wal_ops) / sizeof(uint32_t) ||
           op->op != not_wal_ops[j]) {
         wal = true;
         break;
@@ -3114,33 +3103,7 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, omap_setkeys_exit, r);
       }
       break;
-    case Transaction::OP_PGMETA_SETKEYS:
-      {
-        const coll_t& cid = i.get_cid(op->cid);
-        const ghobject_t& oid = i.get_oid(op->oid);
-        map<string, bufferlist> aset;
-        i.decode_attrset(aset);
-        tracepoint(objectstore, omap_setkeys_enter, osr_name);
-        r = _omap_setkeys(cid, oid, aset, spos);
-        tracepoint(objectstore, omap_setkeys_exit, r);
-      }
-      break;
-    case Transaction::OP_WRITE_AHEAD_LOG:
-      {
-      }
-      break;
     case Transaction::OP_OMAP_RMKEYS:
-      {
-        const coll_t& cid = i.get_cid(op->cid);
-        const ghobject_t& oid = i.get_oid(op->oid);
-        set<string> keys;
-        i.decode_keyset(keys);
-        tracepoint(objectstore, omap_rmkeys_enter, osr_name);
-        r = _omap_rmkeys(cid, oid, keys, spos);
-        tracepoint(objectstore, omap_rmkeys_exit, r);
-      }
-      break;
-    case Transaction::OP_PGMETA_RMKEYS:
       {
         const coll_t& cid = i.get_cid(op->cid);
         const ghobject_t& oid = i.get_oid(op->oid);

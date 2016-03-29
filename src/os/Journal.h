@@ -70,21 +70,12 @@ public:
     uint64_t &seq   ///< [in,out] sequence number on last successful read
     ) = 0; ///< @return true on successful read, false on journal end
 
-  /// Read next journal entry - asserts on invalid journal
-  virtual bool read_entry(
-    bufferlist &bl, ///< [out] payload on successful read
-    uint64_t &seq,  ///< [in,out] sequence number on last successful read
-    bool *corrupt,
-    bool *is_ack = 0
-    ) { return false; } ///< @return true on successful read, false on journal end
-
   virtual bool should_commit_now() = 0;
   
   virtual __u32 get_head_align() { return 0; }
   virtual bool need_entry_crc() { return true; }
 
   virtual int _op_journal_transactions_prepare(list<ObjectStore::Transaction*>& tls, bufferlist& tbl) = 0;
-  virtual int prepare_ack_entry(bufferlist &in, bufferlist &tbl) { return 0; }
 
   // reads/recovery
   

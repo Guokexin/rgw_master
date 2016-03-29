@@ -2566,7 +2566,7 @@ void PG::upgrade(ObjectStore *store, const interval_set<snapid_t> &snapcolls)
   map<string,bufferlist> v;
   __u8 ver = cur_struct_v;
   ::encode(ver, v[infover_key]);
-  t.pgmeta_setkeys(coll, pgmeta_oid, v);
+  t.omap_setkeys(coll, pgmeta_oid, v);
 
   dirty_info = true;
   dirty_big_info = true;
@@ -2761,7 +2761,7 @@ void PG::_init(ObjectStore::Transaction& t, spg_t pgid, const pg_pool_t *pool)
   map<string,bufferlist> values;
   __u8 struct_v = cur_struct_v;
   ::encode(struct_v, values[infover_key]);
-  t.pgmeta_setkeys(coll, pgmeta_oid, values);
+  t.omap_setkeys(coll, pgmeta_oid, values);
 }
 
 void PG::prepare_write_info(map<string,bufferlist> *km)
@@ -2877,18 +2877,12 @@ epoch_t PG::peek_map_epoch(ObjectStore *store,
 
 void PG::write_if_dirty(ObjectStore::Transaction& t)
 {
-  dout(20) << " write_if_dirty dirty_big_info " << dirty_big_info 
-           <<  " dirty_info " << dirty_info << dendl; 
   map<string,bufferlist> km;
   if (dirty_big_info || dirty_info)
     prepare_write_info(&km);
   pg_log.write_log(t, &km, coll, pgmeta_oid, pool.info.require_rollback());
-  if (!km.empty()) {
-    t.pgmeta_setkeys(coll, pgmeta_oid, km);
-    if (wal) {
-      t.do_wal();
-    }
-  }
+  if (!km.empty())
+    t.omap_setkeys(coll, pgmeta_oid, km);
 }
 
 void PG::trim_peers()

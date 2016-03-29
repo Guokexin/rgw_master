@@ -384,10 +384,6 @@ public:
 
       OP_SETALLOCHINT = 39,  // cid, oid, object_size, write_size
       OP_COLL_HINT = 40, // cid, type, bl
-
-      OP_PGMETA_RMKEYS = 61, // rm pgmeta
-      OP_PGMETA_SETKEYS = 62, // write pgmeta
-      OP_WRITE_AHEAD_LOG = 63,  // transaction should be writtend ahead log
     };
 
     // Transaction hint type
@@ -548,7 +544,6 @@ public:
       switch (op->op) {
       case OP_NOP:
       case OP_STARTSYNC:
-      case OP_WRITE_AHEAD_LOG:
         break;
 
       case OP_TOUCH:
@@ -567,8 +562,6 @@ public:
       case OP_ZERO:
       case OP_TRUNCATE:
       case OP_SETALLOCHINT:
-      case OP_PGMETA_RMKEYS:
-      case OP_PGMETA_SETKEYS:
         assert(op->cid < cm.size());
         assert(op->oid < om.size());
         op->cid = cm[op->cid];
@@ -1028,39 +1021,6 @@ public:
 	data.largest_data_off_in_tbl = tbl.length() + sizeof(__u32);  // we are about to
       }
       data.ops++;
-      if (cid.is_meta())
-        do_wal();
-    }
-    void do_wal() {
-      if (use_tbl) {
-        __u32 op = OP_WRITE_AHEAD_LOG;
-        ::encode(op, tbl);
-      } else {
-        Op* _op = _get_next_op(false);
-        _op->op = OP_WRITE_AHEAD_LOG;
-      }
-      data.ops++;
-    }
-
-    void pgmeta_setkeys(
-      coll_t cid,                           ///< [in] Collection containing oid
-      const ghobject_t &oid,                ///< [in] Object to update
-      const map<string, bufferlist> &attrset ///< [in] Replacement keys and values
-      ) {
-      if (use_tbl) {
-        __u32 op = OP_PGMETA_SETKEYS;
-        ::encode(op, tbl);
-        ::encode(cid, tbl);
-        ::encode(oid, tbl);
-        ::encode(attrset, tbl);
-      } else {
-        Op* _op = _get_next_op();
-        _op->op = OP_PGMETA_SETKEYS;
-        _op->cid = _get_coll_id(cid);
-        _op->oid = _get_object_id(oid);
-        ::encode(attrset, data_bl);
-      }
-      data.ops++;
     }
 
     /**
@@ -1497,27 +1457,6 @@ public:
       } else {
         Op* _op = _get_next_op();
         _op->op = OP_OMAP_RMKEYS;
-        _op->cid = _get_coll_id(cid);
-        _op->oid = _get_object_id(oid);
-        ::encode(keys, data_bl);
-      }
-      data.ops++;
-    }
-
-    void pgmeta_rmkeys(
-      coll_t cid,             ///< [in] Collection containing oid
-      const ghobject_t &oid,  ///< [in] Object from which to remove the omap
-      const set<string> &keys ///< [in] Keys to clear
-      ) {
-      if (use_tbl) {
-        __u32 op = OP_PGMETA_RMKEYS;
-        ::encode(op, tbl);
-        ::encode(cid, tbl);
-        ::encode(oid, tbl);
-        ::encode(keys, tbl);
-      } else {
-        Op* _op = _get_next_op();
-        _op->op = OP_PGMETA_RMKEYS;
         _op->cid = _get_coll_id(cid);
         _op->oid = _get_object_id(oid);
         ::encode(keys, data_bl);
