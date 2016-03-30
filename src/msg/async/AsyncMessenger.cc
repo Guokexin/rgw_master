@@ -367,7 +367,7 @@ void WorkerPool::barrier()
  */
 
 AsyncMessenger::AsyncMessenger(CephContext *cct, entity_name_t name,
-                               string mname, uint64_t _nonce)
+                               string mname, uint64_t _nonce, uint64_t features)
   : SimplePolicyMessenger(cct, name,mname, _nonce),
     processor(this, cct, _nonce),
     lock("AsyncMessenger::lock"),
@@ -379,6 +379,7 @@ AsyncMessenger::AsyncMessenger(CephContext *cct, entity_name_t name,
   cct->lookup_or_create_singleton_object<WorkerPool>(pool, WorkerPool::name);
   local_worker = pool->get_worker();
   local_connection = new AsyncConnection(cct, this, &local_worker->center, local_worker->get_perf_counter());
+  local_features = features;
   init_local_connection();
   reap_handler = new C_handle_reap(this);
 }

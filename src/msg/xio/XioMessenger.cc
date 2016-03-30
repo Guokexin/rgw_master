@@ -245,8 +245,8 @@ static string xio_uri_from_entity(const entity_addr_t& addr, bool want_port)
 /* XioMessenger */
 XioMessenger::XioMessenger(CephContext *cct, entity_name_t name,
 			   string mname, uint64_t nonce,
-			   DispatchStrategy *ds)
-  : SimplePolicyMessenger(cct, name, mname, nonce),
+			   DispatchStrategy *ds, uint64_t features)
+  : SimplePolicyMessenger(cct, name, mname, _nonce),
     nsessions(0),
     shutdown_called(false),
     portals(this, cct->_conf->xio_portal_threads),
@@ -369,6 +369,8 @@ XioMessenger::XioMessenger(CephContext *cct, entity_name_t name,
 
   /* update class instance count */
   nInstances.inc();
+
+  loop_con.set_features(features);
 
 } /* ctor */
 
