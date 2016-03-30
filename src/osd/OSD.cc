@@ -8117,9 +8117,6 @@ void OSD::handle_op(OpRequestRef& op, OSDMapRef& osdmap)
     return;
   }
 
-  // we don't need encoded payload anymore
-  m->clear_payload();
-
   Session *client_session =
       static_cast<Session*>(m->get_connection()->get_priv());
   if (client_session) {
