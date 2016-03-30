@@ -510,6 +510,8 @@ public:
   bool is_removal(uint64_t *seq, spg_t *pgid) const;
   void encode(bufferlist& bl) const;
   void decode(bufferlist::iterator& bl);
+  size_t encoded_size() const;
+
   inline bool operator==(const coll_t& rhs) const {
     return str == rhs.str;
   }

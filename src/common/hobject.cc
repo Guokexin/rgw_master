@@ -198,6 +198,7 @@ ostream& operator<<(ostream& out, const hobject_t& o)
 // version 5.
 void ghobject_t::encode(bufferlist& bl) const
 {
+  // when changing this, remember to update encoded_size() too.
   ENCODE_START(5, 3, bl);
   ::encode(hobj.key, bl);
   ::encode(hobj.oid, bl);
@@ -209,6 +210,44 @@ void ghobject_t::encode(bufferlist& bl) const
   ::encode(generation, bl);
   ::encode(shard_id, bl);
   ENCODE_FINISH(bl);
+}
+
+size_t ghobject_t::encoded_size() const
+{
+  // this is not in order of encoding or appearance, but rather
+  // in order of known constants first, so it can be (mostly) computed
+  // at compile time.
+  //  - encoding header + 3 string lengths
+  size_t r = sizeof(ceph_le32) + 2 * sizeof(__u8) + 3 * sizeof(__u32);
+
+  // hobj.snap
+  r += sizeof(uint64_t);
+
+  // hobj.hash
+  r += sizeof(uint32_t);
+
+  // hobj.max
+  r += sizeof(bool);
+
+  // hobj.pool
+  r += sizeof(uint64_t);
+
+  // hobj.generation
+  r += sizeof(uint64_t);
+
+  // hobj.shard_id
+  r += sizeof(int8_t);
+
+  // hobj.key
+  r += hobj.key.size();
+
+  // hobj.oid
+  r += hobj.oid.name.size();
+
+  // hobj.nspace
+  r += hobj.nspace.size();
+
+  return r;
 }
 
 void ghobject_t::decode(bufferlist::iterator& bl)
