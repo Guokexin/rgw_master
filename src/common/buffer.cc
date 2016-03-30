@@ -1153,6 +1153,13 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     return true;
   }
 
+  bool buffer::list::is_provided_buffer(const char *dst) const
+  {
+    if (_buffers.empty())
+      return false;
+    return (is_contiguous() && (_buffers.front().c_str() == dst));
+  }
+
   bool buffer::list::is_aligned(unsigned align) const
   {
     for (std::list<ptr>::const_iterator it = _buffers.begin();
