@@ -579,6 +579,8 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   index_manager(do_update),
   pgmeta_cache(this, g_conf->filestore_pgmeta_cache_shards,
                g_conf->filestore_pgmeta_cache_shard_bytes),
+  m_enable_mscache(g_conf->xstore_mscache_enable),
+  m_enable_mscache_aio(m_enable_mscache && g_conf->xstore_mscache_aio_enable),
   lock("XStore::lock"),
   force_sync(false), 
   sync_entry_timeo_lock("sync_entry_timeo_lock"),
@@ -1553,7 +1555,8 @@ int XStore::mount()
     }
   }
    
-  mscache_modules_init();
+  if (m_enable_mscache)
+    mscache_modules_init();
   sync_thread.create();
   jwa_thread.create();
 
@@ -1660,7 +1663,8 @@ int XStore::umount()
   }
   callback_finisher->stop();
 
-  mscache_modules_exit();
+  if (m_enable_mscache)
+    mscache_modules_exit();
 
   if (fsid_fd >= 0) {
     VOID_TEMP_FAILURE_RETRY(::close(fsid_fd));
@@ -1838,6 +1842,8 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 
 void XStore::aio_callback(AioArgs *args)
 {
+  if (!m_enable_mscache || !m_enable_mscache_aio)
+    assert(0 == "MSCACHE IS TURN OFF");
   Op *o = args->op;
   OpSequencer *osr = args->osr;
   dout(10) << "aio_callback " << *osr << " " << *o << " pending "
@@ -1879,13 +1885,17 @@ void XStore::_finish_op(OpSequencer *osr)
     return;
   }
   if (o->state != Op::STATE_ACK) {
-    if (!o->wal) {
-      // decrease the pending aio if non-wal do any aio
-      osr->pending_lock.Lock();
-      if (osr->pending_aio.dec() == 0) {
-        osr->pending_aio_cond.Signal();
+    if (m_enable_mscache && m_enable_mscache_aio) {
+      if (!o->wal) {
+        // decrease the pending aio if non-wal do any aio
+        if (m_enable_mscache_aio) {
+          osr->pending_lock.Lock();
+          if (osr->pending_aio.dec() == 0) {
+            osr->pending_aio_cond.Signal();
+          }
+          osr->pending_lock.Unlock();
+        }
       }
-      osr->pending_lock.Unlock();
     }
 
     Mutex::Locker l(jwa_lock);
@@ -2350,7 +2360,7 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
       osr->pending_wal.inc();
       logger->inc(l_xs_wal_op);
 
-      if (m_enable_mscache) {
+      if (m_enable_mscache && m_enable_mscache_aio) {
         osr->pending_lock.Lock();
         while (osr->pending_aio.read()) {
           dout(10) << "queue_transactions wait " << *osr << " aio complete" << dendl;
@@ -2359,7 +2369,9 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
         osr->pending_lock.Unlock();
       }
     } else {
-      osr->pending_aio.inc();
+      if (m_enable_mscache && m_enable_mscache_aio) {
+        osr->pending_aio.inc();
+      }
     }
     op_queue_reserve_throttle(o, handle);
     journal->throttle();
@@ -3362,8 +3374,14 @@ int XStore::direct_read(
   oss << oid;
   dout(15) << "XStore::direct_read(" << **fd << ") " << offset << "~" << len
            << " " << r_off << "~" << r_len << dendl;
-//  int got = safe_pread(**fd, bptr.c_str(), r_len, r_off);
-  int got = mscache_read(fd, oss.str().c_str(), bptr.c_str(), r_len, r_off, fadvise_flags);
+
+  // FIXME
+  int got = 0;
+  if (m_enable_mscache) {
+    got = mscache_read(fd, oss.str().c_str(), bptr.c_str(), r_len, r_off, fadvise_flags);
+  } else {
+    got = safe_pread(**fd, bptr.c_str(), r_len, r_off);
+  }
   if (got < 0) {
     return got;
   }
@@ -3408,6 +3426,11 @@ int XStore::direct_write(
            << " footer " << footer_off << "~" << footer_extra
            << " whole " << w_off << "~" << w_len << dendl;
 
+  uint32_t sync_write = MSCACHE_WRITE_API_ASYNC;
+  if (!m_enable_mscache_aio) {
+    sync_write = MSCACHE_WRITE_API_SYNC;
+  }
+
   if (offset % m_block_size != 0 ||
       len % m_block_size != 0 ||
       !bl.is_page_aligned() ||
@@ -3449,18 +3472,45 @@ int XStore::direct_write(
 
     ostringstream oss;
     oss << oid;
+    uint32_t truncate_flag = 0;
+    if (f_len) {
+      truncate_flag = MSCACHE_WRITE_HINT_TRUNCATE;
+    }
     if (op && osr) {
-      op->aio_inflight.inc();
-      op->aio_bl.push_back(write_ptr);
-//      got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
-      got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
-          new AioArgs(this, op, osr, fd), MSCACHE_WRITE_API_ASYNC,
-          MSCACHE_WRITE_HINT_TRUNCATE, f_len);
-//      truncate_and_check(fd, f_len);
+      if (m_enable_mscache) {
+        got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
+          new AioArgs(this, op, osr, fd), sync_write,
+          truncate_flag, f_len);
+        if (m_enable_mscache_aio) {
+          op->aio_bl.push_back(write_ptr);
+          op->aio_inflight.inc();
+        } else if (f_len) {
+          // FIXME
+          struct stat st;
+          ::fstat(**fd, &st);
+          assert(f_len == f_len);
+        }
+      } else {
+        got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
+        truncate_and_check(fd, f_len);
+      }
     } else {
-      got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
-          NULL, MSCACHE_WRITE_API_SYNC, 0, 0);
-      truncate_and_check(fd, f_len);
+      if (m_enable_mscache) {
+        got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
+          NULL, MSCACHE_WRITE_API_SYNC, truncate_flag, f_len);
+        if (m_enable_mscache_aio) {
+          op->aio_bl.push_back(write_ptr);
+          op->aio_inflight.inc();
+        } else if (f_len) {
+          // FIXME
+          struct stat st;
+          ::fstat(**fd, &st);
+          assert(f_len == st.st_size);
+        }
+      } else {
+        got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
+        truncate_and_check(fd, f_len);
+      }
     }
     dout(15) << "XStore::direct_write(" << **fd << ") " << w_off << "~" << front_extra
              << " " << footer_off  << "~" << footer_extra << " f_len " << f_len << dendl;
@@ -3469,13 +3519,23 @@ int XStore::direct_write(
     ostringstream oss;
     oss << oid;
     if (op && osr) {
-      op->aio_inflight.inc();
-      op->aio_bl.push_back(bl.buffers().front());
-      got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
-          new AioArgs(this, op, osr), MSCACHE_WRITE_API_ASYNC, 0, 0);
+      if (m_enable_mscache) {
+        if (m_enable_mscache_aio) {
+          op->aio_bl.push_back(bl.buffers().front());
+          op->aio_inflight.inc();
+        }
+        got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
+          new AioArgs(this, op, osr), sync_write, 0, 0);
+      } else {
+        got = safe_pwrite(**fd, bl.buffers().front().c_str(), w_len, w_off);
+      }
     } else {
-      got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
+      if (m_enable_mscache) {
+        got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
           NULL, MSCACHE_WRITE_API_SYNC, 0, 0);
+      } else {
+        got = safe_pwrite(**fd, bl.buffers().front().c_str(), w_len, w_off);
+      }
     }
   }
 

@@ -255,6 +255,8 @@ private:
   } pgmeta_cache;
 
   ghobject_t txn_object;
+  bool m_enable_mscache;
+  bool m_enable_mscache_aio;
 
   string omap_get_keyname(uint64_t seq);
   int _omap_set_txnseq(uint64_t seq);
