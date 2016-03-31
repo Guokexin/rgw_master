@@ -1247,6 +1247,7 @@ int XStore::mount()
   char buf[PATH_MAX];
   uint64_t initial_op_seq;
   set<string> cluster_snaps;
+  ostringstream ss;
   CompatSet supported_compat_set = get_fs_supported_compat_set();
 
   dout(5) << "basedir " << basedir << " journal " << journalpath << dendl;
@@ -1284,6 +1285,11 @@ int XStore::mount()
 
   dout(10) << "mount fsid is " << fsid << dendl;
 
+  ss << "persist_" << fsid << "_";
+  static const int64_t POOL_IS_PERSIST = -2;
+  txn_object = ghobject_t(hobject_t(object_t(ss.str()), "",
+                          CEPH_NOSNAP, 0, POOL_IS_PERSIST, ""));
+  dout(10) << "transaction object " << txn_object << dendl;
 
   uint32_t version_stamp;
   ret = version_stamp_is_valid(&version_stamp);
@@ -1834,13 +1840,10 @@ void XStore::aio_callback(AioArgs *args)
 {
   Op *o = args->op;
   OpSequencer *osr = args->osr;
-  dout(10) << "aio _finish_op " << *osr << " " << *o << " pending "
+  dout(10) << "aio_callback " << *osr << " " << *o << " pending "
            << o->aio_inflight.read() << dendl;
   // do not conitnue until finish_op
   osr->apply_lock.Lock();
-  if (args->f_len) {
-    truncate_and_check(args->fd, args->f_len);
-  }
   assert(o->aio_inflight.dec() == 0);
   assert(o->state != Op::STATE_ACK);
   {
@@ -1860,7 +1863,7 @@ void XStore::aio_callback(AioArgs *args)
   osr->pending_lock.Unlock();
 
   osr->apply_lock.Unlock();  // locked in _do_op
-  dout(10) << "_finish_op put op to jwa_queue " << *o
+  dout(10) << "aio_callback put op to jwa_queue " << *o
            << " " << *osr << dendl;
   delete args;
 }
@@ -1868,7 +1871,7 @@ void XStore::aio_callback(AioArgs *args)
 void XStore::_finish_op(OpSequencer *osr)
 {
   Op *o = osr->peek_queue();
-  dout(10) << "bio _finish_op " << *o << " inflight "
+  dout(10) << "_finish_op " << *o << " inflight "
            << o->aio_inflight.read() << " " << *osr << dendl;
   if (o->aio_inflight.read()) {
     osr->dequeue();
@@ -1900,12 +1903,17 @@ void XStore::_finish_op(OpSequencer *osr)
     return;
   }
 
+  if (o->wal) {
+    int r = _omap_set_txnseq(o->op);
+    assert(r >= 0);
+  }
+
   o->state = Op::STATE_DONE;
   
   list<Context*> to_queue;
   o = osr->dequeue(&to_queue);
   
-  dout(5) << "_finish_op " << *o << dendl;
+  dout(5) << "_finish_op apply finish " << *o << dendl;
   // finish op by order
   assert(osr->dequeue_inq() == o);
   
@@ -2342,12 +2350,14 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
       osr->pending_wal.inc();
       logger->inc(l_xs_wal_op);
 
-      osr->pending_lock.Lock();
-      while (osr->pending_aio.read()) {
-        dout(10) << "queue_transactions wait " << *osr << dendl;
-        osr->pending_aio_cond.Wait(osr->pending_lock);
+      if (m_enable_mscache) {
+        osr->pending_lock.Lock();
+        while (osr->pending_aio.read()) {
+          dout(10) << "queue_transactions wait " << *osr << " aio complete" << dendl;
+          osr->pending_aio_cond.Wait(osr->pending_lock);
+        }
+        osr->pending_lock.Unlock();
       }
-      osr->pending_lock.Unlock();
     } else {
       osr->pending_aio.inc();
     }
@@ -2459,7 +2469,7 @@ int XStore::_do_transactions(
        p != tls.end();
        ++p, trans_num++) {
     r = _do_transaction(**p, op_seq, trans_num, o, handle);
-    if (o && o->state == Op::STATE_INIT)
+    if (o && o->state != Op::STATE_ACK)
       break;
     if (r < 0)
       break;
@@ -2749,6 +2759,9 @@ unsigned XStore::_do_transaction(
   bool do_txn_pause = false;
   bool alloc = false;
 
+  // should write data
+  bool should_redo = !replaying || !txn_done(op_seq);
+
   while (i.have_op() && !do_txn_pause) {
     if (handle)
       handle->reset_tp_timeout();
@@ -2766,7 +2779,7 @@ unsigned XStore::_do_transaction(
         const coll_t& cid = i.get_cid(op->cid);
         const ghobject_t& oid = i.get_oid(op->oid);
         tracepoint(objectstore, touch_enter, osr_name);
-        if (_check_replay_guard(cid, oid, spos) > 0)
+        if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           r = _touch(cid, oid);
         tracepoint(objectstore, touch_exit, r);
       }
@@ -2797,7 +2810,7 @@ unsigned XStore::_do_transaction(
           }
         }
 
-        if (_check_replay_guard(cid, oid, spos) > 0)
+        if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           if (replaying || o->state != Op::STATE_ACK || o->wal) {
             if (o && !o->wal) {
               r = _write(cid, oid, off, len, bl, fadvise_flags, osrid, o,
@@ -2820,7 +2833,7 @@ unsigned XStore::_do_transaction(
         uint64_t off = op->off;
         uint64_t len = op->len;
         tracepoint(objectstore, zero_enter, osr_name, off, len);
-        if (_check_replay_guard(cid, oid, spos) > 0)
+        if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           r = _zero(cid, oid, off, len, osrid);
         tracepoint(objectstore, zero_exit, r);
       }
@@ -2838,7 +2851,7 @@ unsigned XStore::_do_transaction(
         ghobject_t oid = i.get_oid(op->oid);
         uint64_t off = op->off;
         tracepoint(objectstore, truncate_enter, osr_name, off);
-        if (_check_replay_guard(cid, oid, spos) > 0)
+        if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           r = _truncate(cid, oid, off);
         tracepoint(objectstore, truncate_exit, r);
       }
@@ -2849,8 +2862,12 @@ unsigned XStore::_do_transaction(
         const coll_t& cid = i.get_cid(op->cid);
         const ghobject_t& oid = i.get_oid(op->oid);
         tracepoint(objectstore, remove_enter, osr_name);
-        if (_check_replay_guard(cid, oid, spos) > 0)
+        if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           r = _remove(cid, oid, spos, osrid);
+        // delete write delete, and then replay
+        if (replaying) {
+          r = _rmattrs(cid, oid, spos);
+        }
         tracepoint(objectstore, remove_exit, r);
       }
       break;
@@ -2919,7 +2936,8 @@ unsigned XStore::_do_transaction(
         ghobject_t oid = i.get_oid(op->oid);
         ghobject_t noid = i.get_oid(op->dest_oid);
         tracepoint(objectstore, clone_enter, osr_name);
-        r = _clone(cid, oid, noid, spos);
+        if (should_redo)
+          r = _clone(cid, oid, noid, spos);
         tracepoint(objectstore, clone_exit, r);
       }
       break;
@@ -2932,7 +2950,8 @@ unsigned XStore::_do_transaction(
         uint64_t off = op->off;
         uint64_t len = op->len;
         tracepoint(objectstore, clone_range_enter, osr_name, len);
-        r = _clone_range(cid, oid, noid, off, len, off, spos);
+        if (should_redo)
+          r = _clone_range(cid, oid, noid, off, len, off, spos);
         tracepoint(objectstore, clone_range_exit, r);
       }
       break;
@@ -2946,7 +2965,8 @@ unsigned XStore::_do_transaction(
         uint64_t len = op->len;
         uint64_t dstoff = op->dest_off;
         tracepoint(objectstore, clone_range2_enter, osr_name, len);
-        r = _clone_range(cid, oid, noid, srcoff, len, dstoff, spos);
+        if (should_redo)
+          r = _clone_range(cid, oid, noid, srcoff, len, dstoff, spos);
         tracepoint(objectstore, clone_range2_exit, r);
       }
       break;
@@ -2955,7 +2975,7 @@ unsigned XStore::_do_transaction(
       {
         coll_t cid = i.get_cid(op->cid);
         tracepoint(objectstore, mkcoll_enter, osr_name);
-        if (_check_replay_guard(cid, spos) > 0)
+        if (_check_replay_guard(cid, spos) > 0 && should_redo)
           r = _create_collection(cid, spos);
         tracepoint(objectstore, mkcoll_exit, r);
       }
@@ -2973,7 +2993,7 @@ unsigned XStore::_do_transaction(
           uint64_t num_objs;
           ::decode(pg_num, hiter);
           ::decode(num_objs, hiter);
-          if (_check_replay_guard(cid, spos) > 0) {
+          if (_check_replay_guard(cid, spos) > 0 && should_redo) {
             r = _collection_hint_expected_num_objs(cid, pg_num, num_objs, spos);
           }
         } else {
@@ -2987,7 +3007,7 @@ unsigned XStore::_do_transaction(
       {
         coll_t cid = i.get_cid(op->cid);
         tracepoint(objectstore, rmcoll_enter, osr_name);
-        if (_check_replay_guard(cid, spos) > 0)
+        if (_check_replay_guard(cid, spos) > 0 && should_redo)
           r = _destroy_collection(cid);
         tracepoint(objectstore, rmcoll_exit, r);
       }
@@ -3008,13 +3028,14 @@ unsigned XStore::_do_transaction(
         assert(oid2 == oid);
 
         tracepoint(objectstore, coll_add_enter);
-        r = _collection_add(ncid, ocid, oid, spos);
+        if (should_redo)
+          r = _collection_add(ncid, ocid, oid, spos);
         tracepoint(objectstore, coll_add_exit, r);
         spos.op++;
         if (r < 0)
           break;
         tracepoint(objectstore, coll_remove_enter, osr_name);
-        if (_check_replay_guard(ocid, oid, spos) > 0)
+        if (_check_replay_guard(ocid, oid, spos) > 0 && should_redo)
           r = _remove(ocid, oid, spos, osrid);
         tracepoint(objectstore, coll_remove_exit, r);
       }
@@ -3029,7 +3050,7 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, coll_move_enter);
         r = _collection_add(ocid, ncid, oid, spos);
         if (r == 0 &&
-            (_check_replay_guard(ocid, oid, spos) > 0))
+            (_check_replay_guard(ocid, oid, spos) > 0) && should_redo)
           r = _remove(ocid, oid, spos, osrid);
         tracepoint(objectstore, coll_move_exit, r);
       }
@@ -3042,7 +3063,8 @@ unsigned XStore::_do_transaction(
         coll_t newcid = i.get_cid(op->dest_cid);
         ghobject_t newoid = i.get_oid(op->dest_oid);
         tracepoint(objectstore, coll_move_rename_enter);
-        r = _collection_move_rename(oldcid, oldoid, newcid, newoid, spos, osrid);
+        if (should_redo)
+          r = _collection_move_rename(oldcid, oldoid, newcid, newoid, spos, osrid);
         tracepoint(objectstore, coll_move_rename_exit, r);
       }
       break;
@@ -3054,7 +3076,7 @@ unsigned XStore::_do_transaction(
         bufferlist bl;
         i.decode_bl(bl);
         tracepoint(objectstore, coll_setattr_enter, osr_name);
-        if (_check_replay_guard(cid, spos) > 0)
+        if (_check_replay_guard(cid, spos) > 0 && should_redo)
           r = _collection_setattr(cid, name.c_str(), bl.c_str(), bl.length());
         tracepoint(objectstore, coll_setattr_exit, r);
       }
@@ -3065,7 +3087,7 @@ unsigned XStore::_do_transaction(
         coll_t cid = i.get_cid(op->cid);
         string name = i.decode_string();
         tracepoint(objectstore, coll_rmattr_enter, osr_name);
-        if (_check_replay_guard(cid, spos) > 0)
+        if (_check_replay_guard(cid, spos) > 0 && should_redo)
           r = _collection_rmattr(cid, name.c_str());
         tracepoint(objectstore, coll_rmattr_exit, r);
       }
@@ -3133,7 +3155,8 @@ unsigned XStore::_do_transaction(
         bufferlist bl;
         i.decode_bl(bl);
         tracepoint(objectstore, omap_setheader_enter, osr_name);
-        r = _omap_setheader(cid, oid, bl, spos);
+        if (should_redo)
+          r = _omap_setheader(cid, oid, bl, spos);
         tracepoint(objectstore, omap_setheader_exit, r);
       }
       break;
@@ -3144,7 +3167,8 @@ unsigned XStore::_do_transaction(
         uint32_t rem = op->split_rem;
         coll_t dest = i.get_cid(op->dest_cid);
         tracepoint(objectstore, split_coll_enter, osr_name);
-        r = _split_collection_create(cid, bits, rem, dest, spos);
+        if (should_redo)
+          r = _split_collection_create(cid, bits, rem, dest, spos);
         tracepoint(objectstore, split_coll_exit, r);
       }
       break;
@@ -3155,7 +3179,8 @@ unsigned XStore::_do_transaction(
         uint32_t rem = op->split_rem;
         coll_t dest = i.get_cid(op->dest_cid);
         tracepoint(objectstore, split_coll2_enter, osr_name);
-        r = _split_collection(cid, bits, rem, dest, spos);
+        if (should_redo)
+          r = _split_collection(cid, bits, rem, dest, spos);
         tracepoint(objectstore, split_coll2_exit, r);
       }
       break;
@@ -3168,7 +3193,7 @@ unsigned XStore::_do_transaction(
         uint64_t expected_object_size = op->expected_object_size;
         uint64_t expected_write_size = op->expected_write_size;
         tracepoint(objectstore, setallochint_enter, osr_name);
-        if (_check_replay_guard(cid, oid, spos) > 0)
+        if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           r = _set_alloc_hint(cid, oid, expected_object_size,
                               expected_write_size);
         tracepoint(objectstore, setallochint_exit, r);
@@ -3337,6 +3362,7 @@ int XStore::direct_read(
   oss << oid;
   dout(15) << "XStore::direct_read(" << **fd << ") " << offset << "~" << len
            << " " << r_off << "~" << r_len << dendl;
+//  int got = safe_pread(**fd, bptr.c_str(), r_len, r_off);
   int got = mscache_read(fd, oss.str().c_str(), bptr.c_str(), r_len, r_off, fadvise_flags);
   if (got < 0) {
     return got;
@@ -3426,11 +3452,14 @@ int XStore::direct_write(
     if (op && osr) {
       op->aio_inflight.inc();
       op->aio_bl.push_back(write_ptr);
+//      got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
       got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
-          new AioArgs(this, op, osr, f_len, fd), MSCACHE_WRITE_API_ASYNC);
+          new AioArgs(this, op, osr, fd), MSCACHE_WRITE_API_ASYNC,
+          MSCACHE_WRITE_HINT_TRUNCATE, f_len);
+//      truncate_and_check(fd, f_len);
     } else {
       got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
-          NULL, MSCACHE_WRITE_API_SYNC);
+          NULL, MSCACHE_WRITE_API_SYNC, 0, 0);
       truncate_and_check(fd, f_len);
     }
     dout(15) << "XStore::direct_write(" << **fd << ") " << w_off << "~" << front_extra
@@ -3443,10 +3472,10 @@ int XStore::direct_write(
       op->aio_inflight.inc();
       op->aio_bl.push_back(bl.buffers().front());
       got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
-          new AioArgs(this, op, osr), MSCACHE_WRITE_API_ASYNC);
+          new AioArgs(this, op, osr), MSCACHE_WRITE_API_ASYNC, 0, 0);
     } else {
       got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
-          NULL, MSCACHE_WRITE_API_SYNC);
+          NULL, MSCACHE_WRITE_API_SYNC, 0, 0);
     }
   }
 
@@ -4095,6 +4124,7 @@ private:
 void XStore::sync_entry()
 {
   lock.Lock();
+  uint64_t last_commit_seq = 0;
   while (!stop) {
     utime_t max_interval;
     max_interval.set_from_double(m_filestore_max_sync_interval);
@@ -4190,6 +4220,14 @@ void XStore::sync_entry()
       logger->tinc(l_xs_commit_len, dur);
 
       apply_manager.commit_finish();
+
+      // FIXME only delete seq when mount store
+      if (last_commit_seq == 0) {
+        _omap_rmrange_txnseq(0, cp);
+      } else {
+        _omap_rmrange_txnseq(last_commit_seq, cp);
+      }
+      last_commit_seq = cp;
 
       logger->set(l_xs_committing, 0);
 
@@ -4670,6 +4708,7 @@ int XStore::_setattrs(coll_t cid, const ghobject_t& oid, map<string,bufferptr>& 
        ++p) {
     char n[CHAIN_XATTR_MAX_NAME_LEN];
     get_attrname(p->first.c_str(), n, CHAIN_XATTR_MAX_NAME_LEN);
+    dout(15) << "setattrs " << cid << "/" << oid << " " << p->first << dendl;
 
     if (incomplete_inline) {
       chain_fremovexattr(**fd, n); // ignore any error
@@ -4812,6 +4851,8 @@ int XStore::_rmattrs(coll_t cid, const ghobject_t& oid,
       char n[CHAIN_XATTR_MAX_NAME_LEN];
       get_attrname(p->first.c_str(), n, CHAIN_XATTR_MAX_NAME_LEN);
       r = chain_fremovexattr(**fd, n);
+      dout(10) << "_rmattrs " << cid << "/" << oid << " "
+               << p->first << " = " << r << dendl;
       if (r < 0)
 	break;
     }
@@ -5676,6 +5717,87 @@ int XStore::_omap_clear(coll_t cid, const ghobject_t &hoid,
     return r;
   }
   return 0;
+}
+
+string XStore::omap_get_keyname(uint64_t seq)
+{
+  char key[25];
+  snprintf(key, sizeof(key), "%020llu", (long long unsigned)seq);
+  return string(key);
+}
+
+int XStore::_omap_set_txnseq(uint64_t seq) {
+  dout(15) << __func__ << " " << seq << dendl;
+  map<string, bufferlist> aset;
+  aset[omap_get_keyname(seq)];
+  int r = object_map->set_keys(txn_object, aset);
+  object_map->sync();
+  if (r < 0) {
+    derr << __func__ << " set keys " << cpp_strerror(r) << dendl;
+    assert(0 == "unexpected error");
+  }
+  dout(20) << __func__ << " " << seq << " = " << r << dendl;
+  return r;
+}
+
+int XStore::_omap_rmrange_txnseq(uint64_t from, uint64_t to) {
+  dout(15) << __func__ << " " << from << "~" << to << dendl;
+  std::set<string> keys;
+  {
+    ObjectMap::ObjectMapIterator iter = object_map->get_iterator(txn_object);
+    if (!iter) {
+      return 0;
+    }
+    string first = omap_get_keyname(from);
+    string last = omap_get_keyname(to);
+    for (iter->lower_bound(first); iter->valid() && iter->key() < last;
+         iter->next()) {
+      keys.insert(iter->key());
+    }
+  }
+  int r = 0;
+  if (!keys.empty())
+    r = object_map->rm_keys(txn_object, keys);
+  if (r == -ENOENT) {
+    dout(20) << __func__ << " rm key " << cpp_strerror(r) << dendl;
+    r = 0;
+  } else if (r < 0) {
+    assert(!m_filestore_fail_eio || r != -EIO);
+  }
+  dout(20) << __func__ << " " << from << "~" << to << " = " << r
+           << " rm " << keys.size() << " keys " << dendl;
+  return r;
+}
+
+int XStore::_omap_check_txnseq(uint64_t seq)
+{
+  dout(15) << __func__ << " " << seq << dendl;
+  map<string, bufferlist> out;
+  set<string> keys;
+  keys.insert(omap_get_keyname(seq));
+  int r = object_map->get_values(txn_object, keys, &out);
+  dout(20) << __func__ << " " << cpp_strerror(r) << dendl;
+  if (r != -ENOENT && r < 0) {
+    assert(!m_filestore_fail_eio || r != -EIO);
+  }
+  dout(20) << __func__ << " " << seq << " = " << r << dendl;
+  return out.size() ? 0 : -ENOENT;
+}
+
+bool XStore::txn_done(uint64_t op_seq)
+{
+  dout(15) << __func__ << " " << op_seq << dendl;
+  ostringstream ss;
+  ss << op_seq;
+  int r = _omap_check_txnseq(op_seq);
+  bool exits = true;
+  if (r == -ENOENT) {
+    exits = false;
+  } else if (r != 0){
+    assert (false);
+  }
+  dout(20) << __func__ << " " << op_seq << " = " << exits << dendl;
+  return exits;
 }
 
 int XStore::_omap_setkeys(coll_t cid, const ghobject_t &hoid,

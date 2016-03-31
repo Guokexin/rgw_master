@@ -254,6 +254,14 @@ private:
     }
   } pgmeta_cache;
 
+  ghobject_t txn_object;
+
+  string omap_get_keyname(uint64_t seq);
+  int _omap_set_txnseq(uint64_t seq);
+  int _omap_rmrange_txnseq(uint64_t from, uint64_t to);
+  int _omap_check_txnseq(uint64_t seq);
+  bool txn_done(uint64_t op_seq);
+
   // helper fns
   int get_cdir(const coll_t& cid, char *s, int len);
   
@@ -330,12 +338,11 @@ public:
     XStore *fs;
     Op *op;
     OpSequencer *osr;
-    uint64_t f_len;
     const FDRef fd;
-    AioArgs(XStore *fs, Op *op, OpSequencer *osr, uint64_t f, const FDRef& fd):
-      fs(fs), op(op), osr(osr), f_len(f), fd(fd) {}
+    AioArgs(XStore *fs, Op *op, OpSequencer *osr, const FDRef& fd):
+      fs(fs), op(op), osr(osr), fd(fd) {}
     AioArgs(XStore *fs, Op *op, OpSequencer *osr):
-      fs(fs), op(op), osr(osr), f_len(0) {}
+      fs(fs), op(op), osr(osr) {}
   };
 
   friend ostream& operator<<(ostream& out, const Op& o)
