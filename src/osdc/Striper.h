@@ -71,9 +71,10 @@ class CephContext;
     class StripedReadResult {
       // offset -> (data, intended length)
       map<uint64_t, pair<bufferlist, uint64_t> > partial;
-      uint64_t total_intended_len = 0; //sum of partial.second.second
+      uint64_t total_intended_len; //sum of partial.second.second
 
     public:
+      StripedReadResult(): total_intended_len(0) {}
       void add_partial_result(CephContext *cct,
 			      bufferlist& bl,
 			      const vector<pair<uint64_t,uint64_t> >& buffer_extents);
