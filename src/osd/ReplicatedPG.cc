@@ -10155,6 +10155,10 @@ void ReplicatedPG::scan_range(
       if (r == -ENOENT)
 	continue;
 
+      // If there is not oi for object, just skip it
+      if (r == -ENODATA)
+        continue;
+
       assert(r >= 0);
       object_info_t oi(bl);
       bi->objects[*p] = oi.version;
