@@ -5604,6 +5604,8 @@ void ReplicatedPG::write_update_size_and_usage(object_stat_sum_t& delta_stats, o
   if (length && (offset + length > oi.size)) {
     uint64_t new_size = offset + length;
     delta_stats.num_bytes += new_size - oi.size;
+    dout(20) << __func__ << " update " << oi << " size from " << oi.size
+             << " to " << new_size << dendl;
     oi.size = new_size;
   }
   delta_stats.num_wr++;
