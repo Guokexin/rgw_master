@@ -53,7 +53,7 @@
 #include "common/BackTrace.h"
 #include "include/types.h"
 #include "XJournal.h"
-
+#include "osd/ECUtil.h"
 #include "osd/osd_types.h"
 #include "include/color.h"
 #include "include/buffer.h"
@@ -2793,6 +2793,8 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, touch_enter, osr_name);
         if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           r = _touch(cid, oid);
+        if (replaying)
+          replaying_oids[cid].insert(oid);
         tracepoint(objectstore, touch_exit, r);
       }
       break;
@@ -2835,6 +2837,8 @@ unsigned XStore::_do_transaction(
             do_txn_pause = true;
           }
         tracepoint(objectstore, write_exit, r);
+        if (replaying)
+          replaying_oids[cid].insert(oid);
       }
       break;
       
@@ -2847,6 +2851,8 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, zero_enter, osr_name, off, len);
         if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           r = _zero(cid, oid, off, len, osrid);
+        if (replaying)
+          replaying_oids[cid].insert(oid);
         tracepoint(objectstore, zero_exit, r);
       }
       break;
@@ -2865,6 +2871,8 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, truncate_enter, osr_name, off);
         if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
           r = _truncate(cid, oid, off);
+        if (replaying)
+          replaying_oids[cid].insert(oid);
         tracepoint(objectstore, truncate_exit, r);
       }
       break;
@@ -2878,6 +2886,7 @@ unsigned XStore::_do_transaction(
           r = _remove(cid, oid, spos, osrid);
         // delete write delete, and then replay
         if (replaying) {
+          replaying_oids[cid].insert(oid);
           r = _rmattrs(cid, oid, spos);
         }
         tracepoint(objectstore, remove_exit, r);
@@ -4732,6 +4741,62 @@ int XStore::getattrs(coll_t cid, const ghobject_t& oid, map<string,bufferptr>& a
     tracepoint(objectstore, getattrs_exit, r);
     return r;
   }
+}
+
+void XStore::reset_object_size()
+{
+  assert(replaying);
+  for (map<coll_t, set<ghobject_t> >::iterator p = replaying_oids.begin();
+       p != replaying_oids.end();
+       ++p) {
+    const coll_t& cid = p->first;
+    for (set<ghobject_t>::iterator it = p->second.begin();
+         it != p->second.end();
+         ++it) {
+      struct stat st;
+      bufferptr bp;
+      bufferlist bv;
+      object_info_t oi;
+      FDRef fd;
+      const ghobject_t& oid = *it;
+      int r = stat(cid, oid, &st);
+      ECUtil::HashInfo hinfo;
+      bufferlist::iterator bit;
+      int64_t meta_size = 0;
+      if (r < 0)
+        goto out;
+      if (oid.is_no_shard()) {
+        r = getattr(cid, oid, OI_ATTR, bp);
+        if (r < 0)
+          goto out;
+        bv.push_back(bp);
+        oi.decode(bv);
+        meta_size = oi.size;
+      } else {
+        r = getattr(cid, oid, ECUtil::get_hinfo_key().c_str(), bp);
+        if (r < 0)
+          goto out;
+        bv.push_back(bp);
+        bit = bv.begin();
+        ::decode(hinfo, bit);
+        meta_size = hinfo.get_total_chunk_size();
+      }
+      if (st.st_size != meta_size) {
+        dout(5) << __func__ << " truncate " << oid << " size from " << st.st_size
+                << " to " << meta_size << dendl;
+        r = lfn_open(cid, oid, false, &fd);
+        if (r < 0)
+          goto out;
+        r = truncate_and_check(fd, meta_size);
+      }
+    out:
+      if (r < 0) {
+        r = -errno;
+      }
+      dout(20) << "replaying_truncate " << cid << "/" << oid << " = " << r << dendl;
+    }
+  }
+  replaying_oids.clear();
 }
 
 int XStore::_setattrs(coll_t cid, const ghobject_t& oid, map<string,bufferptr>& aset,

@@ -124,6 +124,7 @@ protected:
 				Context *onjournal, TrackedOpRef osd_op);
 
   virtual int do_transactions(list<ObjectStore::Transaction*>& tls, uint64_t op_seq) = 0;
+  virtual void reset_object_size() = 0;
 
 public:
   bool is_committing() {

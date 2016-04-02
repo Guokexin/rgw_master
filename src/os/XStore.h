@@ -593,10 +593,12 @@ public:
   int open_journal();
 
   PerfCounters *logger;
+  map<coll_t, set<ghobject_t> > replaying_oids;
 
 public:
   int lfn_find(const ghobject_t& oid, const Index& index, 
                                   IndexedPath *path = NULL);
+  void reset_object_size();
   int truncate_and_check(const FDRef& fd, off_t length);
   int lfn_truncate(coll_t cid, const ghobject_t& oid, off_t length);
   int lfn_stat(const coll_t& cid, const ghobject_t& oid, struct stat *buf);

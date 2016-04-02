@@ -1859,7 +1859,7 @@ bool ReplicatedBackend::handle_pull_response(
   interval_set<uint64_t> data_included = pop.data_included;
   bufferlist data;
   data.claim(pop.data);
-  dout(10) << "handle_pull_response "
+  dout(10) << "handle_pull_response from " << from
 	   << pop.recovery_info
 	   << pop.after_progress
 	   << " data.size() is " << data.length()
@@ -1955,7 +1955,7 @@ void ReplicatedBackend::handle_push(
   pg_shard_t from, PushOp &pop, PushReplyOp *response,
   ObjectStore::Transaction *t)
 {
-  dout(10) << "handle_push "
+  dout(10) << "handle_push from " << from << " "
 	   << pop.recovery_info
 	   << pop.after_progress
 	   << dendl;

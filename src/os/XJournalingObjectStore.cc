@@ -165,6 +165,9 @@ int XJournalingObjectStore::journal_replay(uint64_t fs_op_seq)
     op_seq = seq;
   }
 
+  // reset object size based on object_info_t
+  reset_object_size();
+
   replaying = false;
   apply_manager.set_replaying(false);
 
