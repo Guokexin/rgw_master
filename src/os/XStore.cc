@@ -2882,13 +2882,17 @@ unsigned XStore::_do_transaction(
         const coll_t& cid = i.get_cid(op->cid);
         const ghobject_t& oid = i.get_oid(op->oid);
         tracepoint(objectstore, remove_enter, osr_name);
-        if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
-          r = _remove(cid, oid, spos, osrid);
-        // delete write delete, and then replay
-        if (replaying) {
-          replaying_oids[cid].insert(oid);
-          r = _rmattrs(cid, oid, spos);
+        if (_check_replay_guard(cid, oid, spos) > 0) {
+          if (should_redo) {
+            r = _remove(cid, oid, spos, osrid);
+          }
+          if (replaying) {
+            // delete write delete, and then replay
+            r = _rmattrs(cid, oid, spos);
+          }
         }
+        if (replaying)
+          replaying_oids[cid].insert(oid);
         tracepoint(objectstore, remove_exit, r);
       }
       break;
