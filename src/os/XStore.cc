@@ -2963,6 +2963,10 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, clone_enter, osr_name);
         if (should_redo)
           r = _clone(cid, oid, noid, spos);
+        if (replaying) {
+          replaying_oids[cid].insert(oid);
+          replaying_oids[cid].insert(noid);
+        }
         tracepoint(objectstore, clone_exit, r);
       }
       break;
@@ -2977,6 +2981,10 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, clone_range_enter, osr_name, len);
         if (should_redo)
           r = _clone_range(cid, oid, noid, off, len, off, spos);
+        if (replaying) {
+          replaying_oids[cid].insert(oid);
+          replaying_oids[cid].insert(noid);
+        }
         tracepoint(objectstore, clone_range_exit, r);
       }
       break;
@@ -2992,6 +3000,10 @@ unsigned XStore::_do_transaction(
         tracepoint(objectstore, clone_range2_enter, osr_name, len);
         if (should_redo)
           r = _clone_range(cid, oid, noid, srcoff, len, dstoff, spos);
+        if (replaying) {
+          replaying_oids[cid].insert(oid);
+          replaying_oids[cid].insert(noid);
+        }
         tracepoint(objectstore, clone_range2_exit, r);
       }
       break;
