@@ -2319,7 +2319,7 @@ public:
   Op *prepare_write_op(
     const object_t& oid, const object_locator_t& oloc,
     uint64_t off, uint64_t len, const SnapContext& snapc,
-    const bufferlist &bl, ceph::real_time mtime, int flags,
+    const bufferlist &bl, utime_t mtime, int flags,
     Context *onack, Context *oncommit, version_t *objver = NULL,
     ObjectOperation *extra_ops = NULL) {
     vector<OSDOp> ops;
@@ -2338,7 +2338,7 @@ public:
   ceph_tid_t write(
     const object_t& oid, const object_locator_t& oloc,
     uint64_t off, uint64_t len, const SnapContext& snapc,
-    const bufferlist &bl, ceph::real_time mtime, int flags,
+    const bufferlist &bl, utime_t mtime, int flags,
     Context *onack, Context *oncommit, version_t *objver = NULL,
     ObjectOperation *extra_ops = NULL) {
     Op *o = prepare_write_op(oid, oloc, off, len, snapc, bl, mtime, flags,
