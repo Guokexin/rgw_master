@@ -2492,7 +2492,8 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
 
   // send some maps.  it may not be all of them, but it will get them
   // started.
-  epoch_t last = MIN(first + g_conf->osd_map_message_max, osdmap.get_epoch());
+  epoch_t last = MIN(first + g_conf->osd_map_message_max - 1,
+		     osdmap.get_epoch());
   MOSDMap *m = build_incremental(first, last);
   m->oldest_map = get_first_committed();
   m->newest_map = osdmap.get_epoch();
@@ -2547,7 +2548,8 @@ void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
   }
 
   while (first <= osdmap.get_epoch()) {
-    epoch_t last = MIN(first + g_conf->osd_map_message_max, osdmap.get_epoch());
+    epoch_t last = MIN(first + g_conf->osd_map_message_max - 1,
+		       osdmap.get_epoch());
     MOSDMap *m = build_incremental(first, last);
     session->con->send_message(m);
     first = last + 1;
