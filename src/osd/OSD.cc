@@ -6363,6 +6363,12 @@ void OSD::handle_osd_map(MOSDMap *m)
   // even if this map isn't from a mon, we may have satisfied our subscription
   monc->sub_got("osdmap", last);
 
+  if (!m->maps.empty() && requested_full_first) {
+    dout(10) << __func__ << " still missing full maps " << requested_full_first
+	     << ".." << requested_full_last << dendl;
+    rerequest_full_maps();
+  }
+
   if (last <= superblock.newest_map) {
     dout(10) << " no new maps here, dropping" << dendl;
     delete _t;
