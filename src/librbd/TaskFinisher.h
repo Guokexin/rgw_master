@@ -25,7 +25,8 @@ struct TaskFinisherSingleton {
     : m_lock("librbd::TaskFinisher::m_lock") {
     m_safe_timer = new SafeTimer(cct, m_lock, false);
     m_safe_timer->init();
-    m_finisher = new Finisher(cct, "librbd::TaskFinisher::m_finisher", "taskfin_librbd");
+    m_finisher = new Finisher(cct, "librbd::TaskFinisher::m_finisher");
+    m_finisher->start();
   }
   virtual ~TaskFinisherSingleton() {
     {
