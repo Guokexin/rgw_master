@@ -17,6 +17,7 @@
 #include "include/rbd_types.h"
 #include "include/rbd/librbd.h"
 #include "include/rbd/librbd.hpp"
+#include "include/rados/librados.hpp"
 
 #include "global/global_context.h"
 #include "global/global_init.h"
@@ -814,6 +815,43 @@ void read_test_data(rbd_image_t image, const char *expected, uint64_t off, size_
   *passed = true;
 }
 
+void compare_write_test_data(rbd_image_t image, const char *compare_data, const char *write_data, off_t off, bool *passed)
+{
+  size_t len = strlen(compare_data);
+  // compare and write
+  {
+    ssize_t written;
+    written = rbd_compare_write(image, off, len, compare_data, write_data);
+    printf("compare wrote: %u\n", (unsigned int) written);
+    ASSERT_EQ(len, static_cast<size_t>(written));
+  }
+
+  // read to verify the new data is written
+  {
+    ssize_t read;
+    char *result = (char *)malloc(len + 1);
+
+    ASSERT_NE(static_cast<char *>(NULL), result);
+    read = rbd_read(image, off, len, result);
+    printf("read: %d\n", (int) read);
+    ASSERT_EQ(len, static_cast<size_t>(read));
+    result[len] = '\0';
+    if (memcmp(result, write_data, len)) {
+      printf("read: %s\nexpected: %s\n", result, write_data);
+      ASSERT_EQ(0, memcmp(result, write_data, len));
+    }
+    free(result);
+  }
+
+  // compare and write again, should fail with -EILSEQ
+  {
+    ssize_t r = rbd_compare_write(image, off, len, compare_data, write_data);
+    ASSERT_EQ(-EILSEQ, static_cast<int>(r));
+  }
+
+  *passed = true;
+}
+
 TEST_F(TestLibRBD, TestIO)
 {
   rados_ioctx_t ioctx;
@@ -836,6 +874,7 @@ TEST_F(TestLibRBD, TestIO)
   }
   test_data[TEST_IO_SIZE] = '\0';
   memset(zero_data, 0, sizeof(zero_data));
+  zero_data[TEST_IO_SIZE] = '\0';
 
   for (i = 0; i < 5; ++i)
     ASSERT_PASSED(write_test_data, image, test_data, TEST_IO_SIZE * i, TEST_IO_SIZE, 0);
@@ -848,6 +887,9 @@ TEST_F(TestLibRBD, TestIO)
 
   for (i = 5; i < 10; ++i)
     ASSERT_PASSED(aio_read_test_data, image, test_data, TEST_IO_SIZE * i, TEST_IO_SIZE, 0);
+
+  for (i = 5; i < 10; ++i)
+    ASSERT_PASSED(compare_write_test_data, image, test_data, zero_data, TEST_IO_SIZE * i);
 
   // discard 2nd, 4th sections.
   ASSERT_PASSED(discard_test_data, image, TEST_IO_SIZE, TEST_IO_SIZE);
@@ -1097,6 +1139,63 @@ void read_test_data(librbd::Image& image, const char *expected, off_t off, size_
   *passed = true;
 }
 
+void compare_write_test_data(librbd::Image& image, const char *compare_data, const char *write_data, off_t off, bool *passed)
+{
+  size_t len = strlen(compare_data);
+  // compare and write
+  {
+    size_t written;
+    ceph::bufferlist bl1, bl2;
+    bl1.append(compare_data, len);
+    bl2.append(write_data, len);
+    written = image.compare_write(off, len, bl1, bl2);
+    printf("compare wrote: %u\n", (unsigned int) written);
+    ASSERT_EQ(bl2.length(), written);
+  }
+
+  // read to verify the new data is written
+  int read;
+  ceph::bufferlist bl;
+  read = image.read(off, len, bl);
+  ASSERT_TRUE(read >= 0);
+  std::string bl_str(bl.c_str(), read);
+  printf("read: %u\n", (unsigned int) read);
+  int result = memcmp(bl_str.c_str(), write_data, len);
+  if (result != 0) {
+    printf("read: %s\nexpected: %s\n", bl_str.c_str(), write_data);
+    ASSERT_EQ(0, result);
+  }
+
+  // compare and write again, should fail with -EILSEQ
+  {
+    ceph::bufferlist bl1, bl2;
+    bl1.append(compare_data, len);
+    bl2.append(write_data, len);
+    int r = image.compare_write(off, len, bl1, bl2);
+    ASSERT_EQ(-EILSEQ, r);
+  }
+
+  // compare with less data, should fail with -EINVAL
+  {
+    ceph::bufferlist bl1, bl2;
+    bl1.append(compare_data, len - 1);
+    bl2.append(write_data, len);
+    int r = image.compare_write(off, len, bl1, bl2);
+    ASSERT_EQ(-EINVAL, r);
+  }
+
+  // write with less data, should fail with -EINVAL
+  {
+    ceph::bufferlist bl1, bl2;
+    bl1.append(compare_data, len);
+    bl2.append(write_data, len - 1);
+    int r = image.compare_write(off, len, bl1, bl2);
+    ASSERT_EQ(-EINVAL, r);
+  }
+
+  *passed = true;
+}
+
 TEST_F(TestLibRBD, TestIOPP) 
 {
   librados::IoCtx ioctx;
@@ -1133,6 +1232,9 @@ TEST_F(TestLibRBD, TestIOPP)
     
     for (i = 5; i < 10; ++i)
       ASSERT_PASSED(aio_read_test_data, image, test_data, strlen(test_data) * i, TEST_IO_SIZE, 0);
+
+    for (i = 5; i < 10; ++i)
+      ASSERT_PASSED(compare_write_test_data, image, test_data, zero_data, strlen(test_data) * i);
 
     // discard 2nd, 4th sections.
     ASSERT_PASSED(discard_test_data, image, TEST_IO_SIZE, TEST_IO_SIZE);

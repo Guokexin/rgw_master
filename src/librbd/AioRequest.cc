@@ -549,4 +549,13 @@ namespace librbd {
     wr->write(m_object_off, m_write_data);
     wr->set_op_flags2(m_op_flags);
   }
+
+  void AioCompareWrite::add_write_ops(librados::ObjectWriteOperation *wr) {
+    bufferlist in;
+    ::encode(m_object_off, in);
+    ::encode(m_object_len, in);
+    ::encode(m_compare_data, in);
+    ::encode(m_write_data, in);
+    wr->exec("rbd", "compare_write", in);
+  }
 }

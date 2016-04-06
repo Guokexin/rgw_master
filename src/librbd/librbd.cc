@@ -992,6 +992,17 @@ namespace librbd {
     return r;
   }
 
+  ssize_t Image::compare_write(uint64_t ofs, size_t len, ceph::bufferlist& cmp_bl,
+                               ceph::bufferlist& wr_bl)
+  {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+    if (cmp_bl.length() != wr_bl.length() || cmp_bl.length() < len) {
+      return -EINVAL;
+    }
+    int r = librbd::compare_write(ictx, ofs, len, cmp_bl.c_str(), wr_bl.c_str());
+    return r;
+  }
+
 } // namespace librbd
 
 extern "C" void rbd_version(int *major, int *minor, int *extra)
@@ -1989,6 +2000,14 @@ extern "C" int rbd_metadata_list(rbd_image_t image, const char *start, uint64_t 
     tracepoint(librbd, metadata_list_entry, it->first.c_str(), it->second.c_str());
   }
   tracepoint(librbd, metadata_list_exit, r);
+  return r;
+}
+
+extern "C" ssize_t rbd_compare_write(rbd_image_t image, uint64_t ofs, size_t len,
+                                     const char *compare_buf, const char *write_buf)
+{
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+  int r = librbd::compare_write(ictx, ofs, len, compare_buf, write_buf);
   return r;
 }
 

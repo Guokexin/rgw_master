@@ -201,6 +201,10 @@ public:
   /* @parmam op_flags see librados.h constants beginning with LIBRADOS_OP_FLAG */
   int aio_write2(uint64_t off, size_t len, ceph::bufferlist& bl,
 		  RBD::AioCompletion *c, int op_flags);
+
+  ssize_t compare_write(uint64_t ofs, size_t len, ceph::bufferlist& cmp_bl,
+                        ceph::bufferlist& wr_bl);
+
   /**
    * read async from image
    *

@@ -3819,6 +3819,153 @@ reprotect_and_return_err:
     ictx->perfcounter->inc(l_librbd_aio_rd_bytes, buffer_ofs);
   }
 
+  ssize_t compare_write(ImageCtx *ictx, uint64_t off, size_t len,
+                        const char *buf1, const char *buf2)
+  {
+    // utime_t start_time, elapsed;
+    ldout(ictx->cct, 20) << "compare_write " << ictx << " off = " << off
+                         << " len = " << len << dendl;
+
+    // start_time = ceph_clock_now(ictx->cct);
+    Mutex mylock("librbd::compare_write::mylock");
+    Cond cond;
+    bool done;
+    int ret;
+
+    uint64_t mylen = len;
+    ictx->snap_lock.get_read();
+    int r = clip_io(ictx, off, &mylen);
+    ictx->snap_lock.put_read();
+    if (r < 0) {
+      return r;
+    }
+
+    Context *ctx = new C_SafeCond(&mylock, &cond, &done, &ret);
+    AioCompletion *c = aio_create_completion_internal(ctx, rbd_ctx_cb);
+    aio_compare_write(ictx, off, mylen, buf1, buf2, c);
+
+    mylock.Lock();
+    while (!done)
+      cond.Wait(mylock);
+    mylock.Unlock();
+
+    if (ret < 0) {
+      return ret;
+    }
+
+    // elapsed = ceph_clock_now(ictx->cct) - start_time;
+    // ictx->perfcounter->tinc(l_librbd_wr_latency, elapsed);
+    // ictx->perfcounter->inc(l_librbd_wr);
+    // ictx->perfcounter->inc(l_librbd_wr_bytes, mylen);
+    return mylen;
+  }
+
+  void aio_compare_write(ImageCtx *ictx, uint64_t off, size_t len,
+                         const char *buf1, const char *buf2, AioCompletion *c)
+  {
+    CephContext *cct = ictx->cct;
+    ldout(cct, 20) << "aio_compare_write " << ictx << " off = " << off
+                   << " len = " << len << " buf1 = " << (void*)buf1
+		   << " buf2 = " << (void*)buf2 << dendl;
+
+    c->get();
+    int r = ictx_check(ictx);
+    if (r < 0) {
+      c->fail(cct, r);
+      return;
+    }
+
+    RWLock::RLocker owner_locker(ictx->owner_lock);
+    RWLock::RLocker md_locker(ictx->md_lock);
+
+    uint64_t clip_len = len;
+    snapid_t snap_id;
+    ::SnapContext snapc;
+    uint64_t overlap = 0;
+    {
+      // prevent image size from changing between computing clip and recording
+      // pending async operation
+      RWLock::RLocker snap_locker(ictx->snap_lock);
+      r = clip_io(ictx, off, &clip_len);
+      if (r < 0) {
+        c->fail(cct, r);
+        return;
+      }
+
+      snap_id = ictx->snap_id;
+      snapc = ictx->snapc;
+      ictx->parent_lock.get_read();
+      ictx->get_parent_overlap(ictx->snap_id, &overlap);
+      ictx->parent_lock.put_read();
+
+      if (snap_id != CEPH_NOSNAP || ictx->read_only) {
+        c->fail(cct, -EROFS);
+        return;
+      }
+
+      ldout(cct, 20) << "  parent overlap " << overlap << dendl;
+
+      c->init_time(ictx, AIO_TYPE_WRITE);
+    }
+
+    if (ictx->image_watcher->is_lock_supported() &&
+	!ictx->image_watcher->is_lock_owner()) {
+      c->put();
+      ictx->image_watcher->request_lock(
+	boost::bind(&librbd::aio_compare_write, ictx, off, len, buf1, buf2, _1), c);
+      return;
+    }
+
+    // map
+    vector<ObjectExtent> extents;
+    if (len > 0) {
+      Striper::file_to_extents(ictx->cct, ictx->format_string,
+			       &ictx->layout, off, clip_len, 0, extents);
+    }
+
+    for (vector<ObjectExtent>::iterator p = extents.begin();
+	 p != extents.end(); ++p) {
+      ldout(cct, 20) << " oid " << p->oid << " " << p->offset << "~"
+	             << p->length << " from " << p->buffer_extents
+		     << dendl;
+      // assemble extent
+      bufferlist bl1, bl2;
+      for (vector<pair<uint64_t,uint64_t> >::iterator q = p->buffer_extents.begin();
+	   q != p->buffer_extents.end();
+	   ++q) {
+	bl1.append(buf1 + q->first, q->second);
+	bl2.append(buf2 + q->first, q->second);
+      }
+
+      C_AioWrite *req_comp = new C_AioWrite(cct, c);
+      vector<pair<uint64_t,uint64_t> > objectx;
+      Striper::extent_to_file(ictx->cct, &ictx->layout,
+      		      p->objectno, 0, ictx->layout.fl_object_size,
+      		      objectx);
+      uint64_t object_overlap = ictx->prune_parent_extents(objectx, overlap);
+      
+      AioCompareWrite *req = new AioCompareWrite(ictx, p->oid.name,
+	  p->objectno, p->offset, objectx, object_overlap, bl1, bl2,
+	  snapc, snap_id, req_comp);
+      c->add_request();
+      
+      if (!ictx->io_limits_intercept(req, true)) {
+        req->send();
+      }
+    }
+
+    if (ictx->object_cacher) {
+      Mutex::Locker l(ictx->cache_lock);
+      ictx->object_cacher->discard_set(ictx->object_set, extents);
+    }
+
+    c->finish_adding_requests(ictx->cct);
+    c->put();
+
+    // ictx->perfcounter->inc(l_librbd_aio_wr);
+    // ictx->perfcounter->inc(l_librbd_aio_wr_bytes, clip_len);
+  }
+
   AioCompletion *aio_create_completion() {
     AioCompletion *c = new AioCompletion();
     return c;
