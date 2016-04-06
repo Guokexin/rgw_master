@@ -57,6 +57,10 @@ check_host() {
 
     # sysvinit managed instance in standard location?
     if [ -e "/var/lib/ceph/$type/$cluster-$id/sysvinit" ]; then
+        if [ -n "$host" ] && [ "$host" != "$hostname" ]; then
+	    echo "$type.$id is not on the right host $host"
+	    return 1
+        fi
 	host="$hostname"
 	echo "=== $type.$id === "
 	return 0
