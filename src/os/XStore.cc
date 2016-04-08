@@ -4246,7 +4246,10 @@ void XStore::sync_entry()
     fin.swap(sync_waiters);
     lock.Unlock();
 
-    if (apply_manager.commit_start()) {
+    /// FIXME, sync op_seq to disk after reset_object_size, because
+    /// reset_object_size would may truncate the object based on oi.
+    
+    if (!replaying && apply_manager.commit_start()) {
       utime_t start = ceph_clock_now(g_ceph_context);
       uint64_t cp = apply_manager.get_committing_seq();
       sync_entry_timeo_lock.Lock();
