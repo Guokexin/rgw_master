@@ -2439,15 +2439,19 @@ void XStore::_journaled_ack_written(list<Op *> acks)
     Op *o = *it;
     assert(o->state == Op::STATE_COMMIT);
     Context *ondisk = (*it)->ondisk; 
-    dout(5) << __func__ << *o << dendl;
     o->state = Op::STATE_ACK;
 
+    bool wal = o->wal;
+    if (o->wal) {
+      dout(5) << __func__ << *o << " wait up " << dendl;
+    } else {
+      dout(5) << __func__ << *o << dendl;
+    }
     // this should queue in order because the journal does it's completions in order.
     queue_op(osr, o);
 
-    if (o->wal) {
+    if (wal) {
       osr->pending_lock.Lock();
-      dout(5) << __func__ << *o << " wait up " << dendl;
       assert(osr->pending_wal.dec() == 0);
       osr->pending_cond.Signal();
       osr->pending_lock.Unlock();
