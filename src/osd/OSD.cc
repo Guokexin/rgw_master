@@ -8849,9 +8849,20 @@ void OSD::process_throttled_recoveries()
 {
   dout(20) << __func__ << dendl;
   rec_throttle_lock.Lock();
+  // release the timer wait in the throttle if no throttled recoveries. This is
+  // possible because client IOs may have removed the recoveries from the list.
+  if (throttled_recs.empty()) {
+    dout(20) << __func__ << " nothing to process, release timer wait"<< dendl;
+    rec_throttle.schedule_timer(true);
+    rec_throttle_lock.Unlock();
+    return;
+  }
+
   while (!throttled_recs.empty()) {
-    if (rec_throttle.schedule_timer(true))
+    if (rec_throttle.schedule_timer(true)) {
+      dout(20) << __func__ << " need to wait"<< dendl;
       break;
+    }
 
     // Start the recovery op
     boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> throttled_rec =
