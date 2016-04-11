@@ -332,7 +332,8 @@ public:
       STATE_ACK      = 4,
       STATE_DONE     = 5,
     } state;
-    atomic_t aio_inflight;
+    atomic_t aio;
+    atomic_t truncate;
     list<bufferptr> aio_bl;
   };
 
@@ -340,8 +341,8 @@ public:
     XStore *fs;
     Op *op;
     OpSequencer *osr;
-    const FDRef fd;
-    AioArgs(XStore *fs, Op *op, OpSequencer *osr, const FDRef& fd):
+    FDRef fd;
+    AioArgs(XStore *fs, Op *op, OpSequencer *osr, FDRef& fd):
       fs(fs), op(op), osr(osr), fd(fd) {}
     AioArgs(XStore *fs, Op *op, OpSequencer *osr):
       fs(fs), op(op), osr(osr) {}
