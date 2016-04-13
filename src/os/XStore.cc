@@ -3518,7 +3518,7 @@ int XStore::direct_write(
         }
         // maybe async write
         got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
-          new AioArgs(this, op, osr, fd),
+          (m_enable_mscache_aio? new AioArgs(this, op, osr, fd) : NULL),
           (m_enable_mscache_aio? MSCACHE_WRITE_API_ASYNC : MSCACHE_WRITE_API_SYNC),
           (f_len? MSCACHE_WRITE_HINT_TRUNCATE : 0),
           f_len);
@@ -3577,7 +3577,7 @@ int XStore::direct_write(
           fd->aio.inc();
         }
         got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
-          new AioArgs(this, op, osr, fd),
+          (m_enable_mscache_aio? new AioArgs(this, op, osr, fd) : NULL),
           (m_enable_mscache_aio? MSCACHE_WRITE_API_ASYNC : MSCACHE_WRITE_API_SYNC),
           0, 0);
       } else {
