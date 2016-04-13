@@ -809,21 +809,5 @@ namespace librbd {
 
       return 0;
     }
-
-    int compare_write(librados::IoCtx *ioctx, const std::string &oid,
-	              uint64_t offset, uint64_t len,
-                      const bufferlist &cmp_data, const bufferlist &wr_data,
-		      librados::AioCompletion *c)
-    {
-      bufferlist in;
-      assert(cmp_data.length() == len);
-      assert(cmp_data.length() == wr_data.length());
-      ::encode(offset, in);
-      ::encode(len, in);
-      ::encode(cmp_data, in);
-      ::encode(wr_data, in);
-      int r = ioctx->aio_exec(oid, c, "rbd", "compare_write", in, NULL);
-      return r;
-    }
   } // namespace cls_client
 } // namespace librbd
