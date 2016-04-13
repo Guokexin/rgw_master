@@ -81,6 +81,8 @@ enum {
   l_xs_apply_lat,
   l_xs_queue_lat,
   l_xs_wal_op,
+  l_xs_ack_entry,
+  l_xs_ack_commit,
   l_xs_last,
 };
 class XStore : public XJournalingObjectStore,
@@ -335,6 +337,15 @@ public:
     atomic_t aio;
     atomic_t truncate;
     list<bufferptr> aio_bl;
+    Mutex lock;
+    Op() : lock("Op::lock") {
+    }
+    void get_lock() {
+      lock.Lock();
+    }
+    void put_lock() {
+      lock.Unlock();
+    }
   };
 
   struct AioArgs {

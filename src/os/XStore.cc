@@ -676,7 +676,9 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   plb.add_time_avg(l_xs_apply_lat, "apply_latency");
   plb.add_u64_counter(l_xs_fdcache, "fdcache");
   plb.add_u64_counter(l_xs_fdcache_hit, "fdcache_hit");
-  plb.add_u64(l_xs_wal_op, "write_ahead_log");
+  plb.add_u64_counter(l_xs_wal_op, "op_wal");
+  plb.add_u64_counter(l_xs_ack_entry, "ack_entry");
+  plb.add_u64_counter(l_xs_ack_commit, "ack_commit");
   plb.add_u64(l_xs_committing, "committing");
 
   plb.add_u64_counter(l_xs_commit, "commitcycle");
@@ -1820,6 +1822,7 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 
   osr->apply_lock.Lock();
   Op *o = osr->peek_queue();
+  o->get_lock();
   assert(o->state == Op::STATE_ACK ||
          o->state == Op::STATE_INIT ||
          o->state == Op::STATE_JOURNAL);
@@ -1850,9 +1853,13 @@ void XStore::aio_callback(AioArgs *args)
   dout(10) << "aio_callback " << *osr << " " << *o << " pending "
            << o->aio.read() << dendl;
 
+  o->get_lock();
   assert(o->aio.dec() == 0);
+  o->put_lock();
+
   FDRef &fd = args->fd;
-  assert(fd->aio.dec() == 0);
+  fd->aio.dec();
+
   if (o->truncate.read() != 0) {
     assert(o->truncate.read() == 1);
     {
@@ -1890,6 +1897,7 @@ void XStore::_finish_op(OpSequencer *osr)
            << o->aio.read() << " " << *osr << dendl;
   if (o->aio.read()) {
     osr->dequeue();
+    o->put_lock();
     osr->apply_lock.Unlock();  // locked in _do_op
     return;
   }
@@ -1914,6 +1922,7 @@ void XStore::_finish_op(OpSequencer *osr)
       jwa_cond.SignalOne();
     }
     osr->dequeue();
+    o->put_lock();
     osr->apply_lock.Unlock();  // locked in _do_op
     dout(10) << "_finish_op put op to jwa_queue " << *o
              << " " << *osr << dendl;
@@ -1934,6 +1943,7 @@ void XStore::_finish_op(OpSequencer *osr)
   // finish op by order
   assert(osr->dequeue_inq() == o);
   
+  o->put_lock();
   osr->apply_lock.Unlock();  // locked in _do_op
   
   // called with tp lock held
@@ -2026,6 +2036,9 @@ void XStore::_jwa_entry()
       }
       ::encode(seqs, bl);
 #endif
+
+      logger->inc(l_xs_ack_entry, jwa_opq.size());
+      logger->inc(l_xs_ack_commit);
 
       Context *ondisk = new C_JournaledAckWritten(this, jwa_opq);
       Op *o = build_op(tls, NULL,
@@ -2282,9 +2295,11 @@ bool XStore::_should_wal(list<Transaction*> &tls)
     for (uint32_t i = 0, j = 0; i < ops; i++) {
       Transaction::Op* op = reinterpret_cast<Transaction::Op*>(op_p);
       op_p += sizeof(Transaction::Op);
-      if (i == 0 && op->op == Transaction::OP_SETALLOCHINT)
+      if (j == 0 && op->op == Transaction::OP_SETALLOCHINT)
         continue;
-      if (i == 2 && op->op == Transaction::OP_OMAP_RMKEYS)
+      if (j == 0 && op->op == Transaction::OP_NOP)
+        continue;
+      if (j == 2 && op->op == Transaction::OP_OMAP_RMKEYS)
         continue;
       if (j >= sizeof(not_wal_ops) / sizeof(uint32_t) ||
           op->op != not_wal_ops[j]) {
