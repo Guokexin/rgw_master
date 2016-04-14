@@ -255,8 +255,8 @@ class PrioritizedQueue {
 
   void remove_queue(set<unsigned>::iterator iter) {
     assert(iter != queue_keys.end());
-    queue_keys.erase(iter);
     total_priority -= *iter;
+    queue_keys.erase(iter);
     assert(total_priority >= 0);
   }
 
