@@ -17,7 +17,6 @@
 #include "include/rbd_types.h"
 #include "include/rbd/librbd.h"
 #include "include/rbd/librbd.hpp"
-#include "include/rados/librados.hpp"
 
 #include "global/global_context.h"
 #include "global/global_init.h"
