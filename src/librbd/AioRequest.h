@@ -222,15 +222,12 @@ namespace librbd {
   public:
     AioCompareWrite(ImageCtx *ictx, const std::string &oid,
 	            uint64_t object_no, uint64_t object_off,
-	            vector<pair<uint64_t,uint64_t> >& objectx,
-		    uint64_t object_overlap, const ceph::bufferlist &compare_data,
+		    const ceph::bufferlist &compare_data,
 		    const ceph::bufferlist &write_data, const ::SnapContext &snapc,
-	            librados::snap_t snap_id, Context *completion)
+	            Context *completion)
       : AbstractWrite(ictx, oid,
 		      object_no, object_off, write_data.length(),
-		      objectx, object_overlap,
-		      snapc, snap_id,
-		      completion, false),
+		      snapc, completion, false),
 	m_compare_data(compare_data), m_write_data(write_data), m_op_flags(0) {
     }
     virtual ~AioCompareWrite() {}
