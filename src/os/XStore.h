@@ -335,10 +335,13 @@ public:
       STATE_DONE     = 5,
     } state;
     atomic_t aio;
-    atomic_t truncate;
     list<bufferptr> aio_bl;
     Mutex lock;
-    Op() : lock("Op::lock") {
+
+    Op() : lock("Op::lock") {}
+    bool has_aio() {
+      assert(lock.is_locked());
+      return aio.read() > 0;
     }
     void get_lock() {
       lock.Lock();
@@ -353,10 +356,9 @@ public:
     Op *op;
     OpSequencer *osr;
     FDRef fd;
-    AioArgs(XStore *fs, Op *op, OpSequencer *osr, FDRef& fd):
-      fs(fs), op(op), osr(osr), fd(fd) {}
-    AioArgs(XStore *fs, Op *op, OpSequencer *osr):
-      fs(fs), op(op), osr(osr) {}
+    bool truncate;
+    AioArgs(XStore *fs, Op *op, OpSequencer *osr, FDRef& fd, bool tr):
+      fs(fs), op(op), osr(osr), fd(fd), truncate(tr) {}
   };
 
   friend ostream& operator<<(ostream& out, const Op& o)
@@ -370,17 +372,16 @@ public:
   }
 
   class OpSequencer : public Sequencer_impl {
-    Mutex qlock; // to protect q, for benefit of flush (peek/dequeue also protected by lock)
     list<Op*> q;
     list<Op*> in_q;
     list<uint64_t> jq;
     list<pair<uint64_t, Context*> > flush_commit_waiters;
     Cond cond;
   public:
+    Mutex qlock; // to protect q, for benefit of flush (peek/dequeue also protected by lock)
     Sequencer *parent;
     Mutex apply_lock;  // for apply mutual exclusion
     int id;
-    atomic_t pending_aio;
     Cond pending_aio_cond;
 
     Mutex pending_lock;
@@ -436,6 +437,14 @@ public:
       }
     }
 
+    bool empty() {
+      assert(qlock.is_locked());
+      return in_q.empty();
+    }
+    size_t size() {
+      Mutex::Locker l(qlock);
+      return q.size();
+    }
     void queue_journal(uint64_t s) {
       Mutex::Locker l(qlock);
       jq.push_back(s);
