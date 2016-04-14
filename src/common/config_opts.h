@@ -861,7 +861,7 @@ OPTION(filestore_fail_eio, OPT_BOOL, true)       // fail/crash on EIO
 OPTION(filestore_debug_verify_split, OPT_BOOL, false)
 
 OPTION(xstore_mscache_enable, OPT_BOOL, true)
-OPTION(xstore_mscache_aio_enable, OPT_BOOL, false)
+OPTION(xstore_mscache_aio_enable, OPT_BOOL, true)
 OPTION(xstore_max_commit_entries, OPT_BOOL, 512)
 
 OPTION(journal_dio, OPT_BOOL, true)
