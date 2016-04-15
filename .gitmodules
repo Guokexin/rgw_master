@@ -22,6 +22,6 @@
 [submodule "ceph-erasure-code-corpus"]
 	path = ceph-erasure-code-corpus
 	url = https://github.com/ceph/ceph-erasure-code-corpus.git
-[submodule "src/mscache"]
-	path = src/mscache
+[submodule "src/os/xstore/mscache"]
+	path = src/os/xstore/mscache
 	url = git@github.xsky.com:EntFeatures/mscache.git

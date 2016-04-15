@@ -22,7 +22,6 @@
 #include <errno.h>
 #include <dirent.h>
 #include <sys/ioctl.h>
-#include "include/mscache_expt.h"
 #if defined(__linux__)
 #include <linux/fs.h>
 #endif
@@ -32,7 +31,16 @@
 
 #include "include/compat.h"
 #include "include/linux_fiemap.h"
-
+#include "os/xstore/mscache/mscache_expt.h"
+#include "os/xstore/mscache/backend_aio.h"
+#include "os/xstore/mscache/mscache_bm.h"
+#include "os/xstore/mscache/mscache_common.h"
+#include "os/xstore/mscache/mscache_debug.h"
+#include "os/xstore/mscache/mscache_list.h"
+#include "os/xstore/mscache/mscache_type.h"
+#include "os/xstore/mscache/rcache_bm.h"
+#include "os/xstore/mscache/rcache.h"
+#include "os/xstore/mscache/mscache.h"
 #include "common/xattr.h"
 #include "chain_xattr.h"
 
@@ -54,6 +62,7 @@
 #include "include/types.h"
 #include "XJournal.h"
 #include "osd/ECUtil.h"
+#include "osd/ECUtil.cc"
 #include "osd/osd_types.h"
 #include "include/color.h"
 #include "include/buffer.h"
@@ -69,7 +78,6 @@
 #include "HashIndex.h"
 #include "DBObjectMap.h"
 #include "KeyValueDB.h"
-
 #include "common/ceph_crypto.h"
 using ceph::crypto::SHA1;
 
@@ -162,7 +170,7 @@ void XStore::FSPerfTracker::update_from_perfcounters(
 ostream& operator<<(ostream& out, const XStore::OpSequencer& s)
 {
   assert(&out);
-  return out << *s.parent << " aio " << s.pending_aio.read() << " ";
+  return out << *s.parent;
 }
 
 int XStore::get_cdir(const coll_t& cid, char *s, int len) 
@@ -211,7 +219,10 @@ int XStore::lfn_truncate(coll_t cid, const ghobject_t& oid, off_t length)
   int r = lfn_open(cid, oid, false, &fd);
   if (r < 0)
     return r;
-  assert(fd->truncate.read() == 0);
+  {
+    Mutex::Locker l(fd->lock);
+    assert(fd->truncate.read() == 0);
+  }
   r = ::ftruncate(**fd, length);
   if (r < 0)
     r = -errno;
@@ -747,7 +758,7 @@ int XStore::open_journal()
   if (journalpath.length()) {
     dout(10) << "open_journal at " << journalpath << dendl;
     journal = new XJournal(fsid, &finisher, &sync_cond, journalpath.c_str(),
-			      m_journal_dio, m_journal_aio, m_journal_force_aio);
+			      true, true, true);
     if (journal)
       journal->logger = logger;
   }
@@ -1858,15 +1869,13 @@ void XStore::aio_callback(AioArgs *args)
   o->put_lock();
 
   FDRef &fd = args->fd;
-  fd->aio.dec();
-
-  if (o->truncate.read() != 0) {
-    assert(o->truncate.read() == 1);
-    {
-      Mutex::Locker l(fd->lock);
+  {
+    Mutex::Locker l(fd->lock);
+    fd->aio.dec();
+    if (args->truncate) {
       assert(fd->truncate.dec() == 0);
-      fd->cond.Signal();
     }
+    fd->cond.Signal();
   }
   assert(o->state != Op::STATE_ACK);
   {
@@ -1879,11 +1888,6 @@ void XStore::aio_callback(AioArgs *args)
       jwa_cond.SignalOne();
     }
   }
-  osr->pending_lock.Lock();
-  if (osr->pending_aio.dec() == 0) {
-    osr->pending_aio_cond.Signal();
-  }
-  osr->pending_lock.Unlock();
 
   dout(10) << "aio_callback put op to jwa_queue " << *o
            << " " << *osr << dendl;
@@ -1893,26 +1897,16 @@ void XStore::aio_callback(AioArgs *args)
 void XStore::_finish_op(OpSequencer *osr)
 {
   Op *o = osr->peek_queue();
-  dout(10) << "_finish_op " << *o << " inflight "
+  dout(10) << "_finish_op " << *o << " aio "
            << o->aio.read() << " " << *osr << dendl;
-  if (o->aio.read()) {
+
+  if (o->has_aio()) {
     osr->dequeue();
     o->put_lock();
     osr->apply_lock.Unlock();  // locked in _do_op
     return;
   }
   if (o->state != Op::STATE_ACK) {
-    if (m_enable_mscache_aio) {
-      if (!o->wal) {
-        // decrease the pending aio if non-wal do any aio
-        osr->pending_lock.Lock();
-        if (osr->pending_aio.dec() == 0) {
-          osr->pending_aio_cond.Signal();
-        }
-        osr->pending_lock.Unlock();
-      }
-    }
-
     Mutex::Locker l(jwa_lock);
     if (o->state == Op::STATE_INIT) {
       o->state = Op::STATE_WRITE;
@@ -1938,10 +1932,17 @@ void XStore::_finish_op(OpSequencer *osr)
   
   list<Context*> to_queue;
   o = osr->dequeue(&to_queue);
+  Op *q = osr->dequeue_inq();
   
-  dout(5) << "_finish_op apply finish " << *o << dendl;
+  osr->qlock.Lock();
+  if (osr->empty()) {
+    osr->pending_aio_cond.Signal();
+  }
+  osr->qlock.Unlock();
+
   // finish op by order
-  assert(osr->dequeue_inq() == o);
+  dout(5) << "_finish_op apply finish " << *q << " " << *o << dendl;
+  assert(q == o);
   
   o->put_lock();
   osr->apply_lock.Unlock();  // locked in _do_op
@@ -2383,16 +2384,12 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
       logger->inc(l_xs_wal_op);
 
       if (m_enable_mscache_aio) {
-        osr->pending_lock.Lock();
-        while (osr->pending_aio.read()) {
+        osr->qlock.Lock();
+        while (!osr->empty()) {
           dout(10) << "queue_transactions wait " << *osr << " aio complete" << dendl;
-          osr->pending_aio_cond.Wait(osr->pending_lock);
+          osr->pending_aio_cond.Wait(osr->qlock);
         }
-        osr->pending_lock.Unlock();
-      }
-    } else {
-      if (m_enable_mscache_aio) {
-        osr->pending_aio.inc();
+        osr->qlock.Unlock();
       }
     }
     op_queue_reserve_throttle(o, handle);
@@ -2796,6 +2793,7 @@ unsigned XStore::_do_transaction(
 
   bool do_txn_pause = false;
   bool alloc = false;
+  bool nop = false;
 
   // should write data
   bool should_redo = !replaying || !txn_done(op_seq);
@@ -2811,6 +2809,7 @@ unsigned XStore::_do_transaction(
 
     switch (op->op) {
     case Transaction::OP_NOP:
+      nop = true;
       break;
     case Transaction::OP_TOUCH:
       {
@@ -3352,8 +3351,7 @@ unsigned XStore::_do_transaction(
   }
 
   if (!replaying && o->state != Op::STATE_ACK) {
-    if (trans_num != 0 || (!alloc && spos.op != 1) ||
-        (alloc && spos.op != 2)) {
+    if (trans_num != 0 || (spos.op != (alloc + nop + 1))) {
       dout(0) << " transaction dump:\n";
       JSONFormatter f(true);
       f.open_object_section("transaction");
@@ -3364,6 +3362,7 @@ unsigned XStore::_do_transaction(
       assert(0 == "Unexpected Logic");
     }
   }
+
   _inject_failure();
 
   return 0;  // FIXME count errors
@@ -3416,8 +3415,6 @@ int XStore::direct_read(
   size_t len,
   uint32_t fadvise_flags)
 {
-  assert(fd->truncate.read() == 0);
-  assert(fd->aio.read() == 0);
   uint64_t front_extra = offset % m_block_size;
   uint64_t r_off = offset - front_extra;
   uint64_t r_len = ROUND_UP_TO(len + front_extra, m_block_size);
@@ -3427,6 +3424,8 @@ int XStore::direct_read(
   oss << oid;
   dout(15) << "XStore::direct_read(" << **fd << ") " << offset << "~" << len
            << " " << r_off << "~" << r_len << dendl;
+
+  fd->flush();
 
   // FIXME
   int got = 0;
@@ -3523,23 +3522,25 @@ int XStore::direct_write(
     if (op && osr) {
       if (m_enable_mscache) {
         if (m_enable_mscache_aio) {
-          if (f_len || fd->truncate.read() != 0) {
+          if (f_len || fd->has_truncate()) {
             fd->flush();
             if (f_len) {
-              op->truncate.inc();
+              Mutex::Locker l(fd->lock);
               fd->truncate.inc();
             }
           }
         }
         // maybe async write
         got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
-          (m_enable_mscache_aio? new AioArgs(this, op, osr, fd) : NULL),
+          (m_enable_mscache_aio? new AioArgs(this, op, osr, fd, f_len > 0 ) : NULL),
           (m_enable_mscache_aio? MSCACHE_WRITE_API_ASYNC : MSCACHE_WRITE_API_SYNC),
           (f_len? MSCACHE_WRITE_HINT_TRUNCATE : 0),
           f_len);
         if (m_enable_mscache_aio) {
           op->aio_bl.push_back(write_ptr);
+          assert(op->lock.is_locked());
           op->aio.inc();
+          Mutex::Locker fl(fd->lock);
           fd->aio.inc();
         } else if (f_len) {
           // FIXME
@@ -3555,7 +3556,7 @@ int XStore::direct_write(
       if (m_enable_mscache) {
         //sync write
         if (m_enable_mscache_aio) {
-          if (fd->truncate.read() != 0) {
+          if (fd->has_truncate()) {
             fd->flush();
           }
         }
@@ -3584,15 +3585,17 @@ int XStore::direct_write(
       if (m_enable_mscache) {
         // async wrie
         if (m_enable_mscache_aio) {
-          if (fd->truncate.read() != 0) {
+          if (fd->has_truncate()) {
             fd->flush();
           }
           op->aio_bl.push_back(bl.buffers().front());
+          assert(op->lock.is_locked());
           op->aio.inc();
+          Mutex::Locker fl(fd->lock);
           fd->aio.inc();
         }
         got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
-          (m_enable_mscache_aio? new AioArgs(this, op, osr, fd) : NULL),
+          (m_enable_mscache_aio? new AioArgs(this, op, osr, fd, 0) : NULL),
           (m_enable_mscache_aio? MSCACHE_WRITE_API_ASYNC : MSCACHE_WRITE_API_SYNC),
           0, 0);
       } else {
@@ -3602,7 +3605,7 @@ int XStore::direct_write(
       //sync write
       if (m_enable_mscache) {
         if (m_enable_mscache_aio) {
-          if (fd->truncate.read() != 0) {
+          if (fd->has_truncate()) {
             fd->flush();
           }
         }

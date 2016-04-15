@@ -92,7 +92,6 @@ libcommon_internal_la_SOURCES += \
 	mon/MonMap.cc \
 	osd/OSDMap.cc \
 	osd/osd_types.cc \
-	osd/ECUtil.cc \
 	osd/ECMsgTypes.cc \
 	osd/HitSet.cc \
 	mds/MDSMap.cc \
