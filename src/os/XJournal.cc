@@ -44,18 +44,15 @@ const static int64_t ONE_MEG(1 << 20);
 
 int XJournal::_open(bool forwrite, bool create)
 {
+#ifndef HAVE_LIBAIO
+  assert (0 == "XJournal::_open: libaio not compiled in");
+#endif
   int flags, ret;
 
   if (aio && !directio) {
     derr << "XJournal::_open: aio not supported without directio; disabling aio" << dendl;
     aio = false;
   }
-#ifndef HAVE_LIBAIO
-  if (aio) {
-    derr << "XJournal::_open: libaio not compiled in; disabling aio" << dendl;
-    aio = false;
-  }
-#endif
 
   if (forwrite) {
     flags = O_RDWR;

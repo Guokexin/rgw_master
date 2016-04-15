@@ -750,7 +750,7 @@ int XStore::open_journal()
   if (journalpath.length()) {
     dout(10) << "open_journal at " << journalpath << dendl;
     journal = new XJournal(fsid, &finisher, &sync_cond, journalpath.c_str(),
-			      m_journal_dio, m_journal_aio, m_journal_force_aio);
+			      true, true, true);
     if (journal)
       journal->logger = logger;
   }
