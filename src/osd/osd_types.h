@@ -1672,6 +1672,7 @@ struct pg_history_t {
   epoch_t last_epoch_started;  // lower bound on last epoch started (anywhere, not necessarily locally)
   epoch_t last_epoch_clean;    // lower bound on last epoch the PG was completely clean.
   epoch_t last_epoch_split;    // as parent
+  epoch_t last_epoch_marked_full;  // pool or cluster
   
   /**
    * In the event of a map discontinuity, same_*_since may reflect the first
@@ -1693,6 +1694,7 @@ struct pg_history_t {
   pg_history_t()
     : epoch_created(0),
       last_epoch_started(0), last_epoch_clean(0), last_epoch_split(0),
+      last_epoch_marked_full(0),
       same_up_since(0), same_interval_since(0), same_primary_since(0) {}
   
   bool merge(const pg_history_t &other) {
@@ -1712,6 +1714,10 @@ struct pg_history_t {
     }
     if (last_epoch_split < other.last_epoch_split) {
       last_epoch_split = other.last_epoch_split; 
+      modified = true;
+    }
+    if (last_epoch_marked_full < other.last_epoch_marked_full) {
+      last_epoch_marked_full = other.last_epoch_marked_full;
       modified = true;
     }
     if (other.last_scrub > last_scrub) {
@@ -1746,7 +1752,8 @@ WRITE_CLASS_ENCODER(pg_history_t)
 
 inline ostream& operator<<(ostream& out, const pg_history_t& h) {
   return out << "ec=" << h.epoch_created
-	     << " les/c " << h.last_epoch_started << "/" << h.last_epoch_clean
+	     << " les/c/f " << h.last_epoch_started << "/" << h.last_epoch_clean
+	     << "/" << h.last_epoch_marked_full
 	     << " " << h.same_up_since << "/" << h.same_interval_since << "/" << h.same_primary_since;
 }
 
@@ -2728,12 +2735,11 @@ public:
   // last interval over which i mounted and was then active
   epoch_t mounted;     // last epoch i mounted
   epoch_t clean_thru;  // epoch i was active and clean thru
-  epoch_t last_map_marked_full; // last epoch osdmap was marked full
 
   OSDSuperblock() : 
     whoami(-1), 
     current_epoch(0), oldest_map(0), newest_map(0), weight(0),
-    mounted(0), clean_thru(0), last_map_marked_full(0) {
+    mounted(0), clean_thru(0) {
   }
 
   void encode(bufferlist &bl) const;

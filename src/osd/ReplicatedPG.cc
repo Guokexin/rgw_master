@@ -1448,6 +1448,12 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   // which there is no reason to discard because they bypass all full
   // checks anyway.
   // FIXME: we exclude mds writes for now.
+  if (!(m->get_source().is_mds() || m->has_flag(CEPH_OSD_FLAG_FULL_FORCE)) &&
+      info.history.last_epoch_marked_full > m->get_map_epoch()) {
+    dout(10) << __func__ << " discarding op sent before full " << m << " "
+	     << *m << dendl;
+    return;
+  }
   if (osd->check_failsafe_full()) {
     dout(10) << __func__ << " fail-safe full check failed, dropping request"
 	     << dendl;
@@ -2389,13 +2395,6 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
   if (result == -EAGAIN) {
     // clean up after the ctx
     close_op_ctx(ctx, result);
-    return;
-  }
-
-  // check for full
-  if (ctx->delta_stats.num_bytes > 0 &&
-      pool.info.has_flag(pg_pool_t::FLAG_FULL)) {
-    reply_ctx(ctx, -ENOSPC);
     return;
   }
 
@@ -5753,6 +5752,27 @@ int ReplicatedPG::prepare_transaction(OpContext *ctx)
   if (ctx->op_t->empty() && !ctx->modify) {
     unstable_stats.add(ctx->delta_stats);
     return result;
+  }
+
+  // check for full
+  if ((ctx->delta_stats.num_bytes > 0 ||
+       ctx->delta_stats.num_objects > 0) &&  // FIXME: keys?
+      (pool.info.has_flag(pg_pool_t::FLAG_FULL) ||
+       get_osdmap()->test_flag(CEPH_OSDMAP_FULL))) {
+    MOSDOp *m = static_cast<MOSDOp*>(ctx->op->get_req());
+    if (ctx->reqid.name.is_mds() ||   // FIXME: ignore MDS for now
+	m->has_flag(CEPH_OSD_FLAG_FULL_FORCE)) {
+      dout(20) << __func__ << " full, but proceeding due to FULL_FORCE or MDS"
+	       << dendl;
+    } else if (m->has_flag(CEPH_OSD_FLAG_FULL_TRY)) {
+      // they tried, they failed.
+      dout(20) << __func__ << " full, replying to FULL_TRY op" << dendl;
+      return -ENOSPC;
+    } else {
+      // drop request
+      dout(20) << __func__ << " full, dropping request (bad client)" << dendl;
+      return -EAGAIN;
+    }
   }
 
   // clone, if necessary
