@@ -30,18 +30,18 @@ using namespace std;
 
 #include "os/ObjectStore.h"
 #include "os/FileStore.h"
-#include "os/XJournalingObjectStore.h"
+#include "os/xstore/XJournalingObjectStore.h"
 
 #include "common/Timer.h"
 #include "common/WorkQueue.h"
 
 #include "common/Mutex.h"
-#include "HashIndex.h"
-#include "IndexManager.h"
-#include "DBObjectMap.h"
-#include "KeyValueDB.h"
-#include "SequencerPosition.h"
-#include "FDCache.h"
+#include "os/HashIndex.h"
+#include "os/IndexManager.h"
+#include "os/DBObjectMap.h"
+#include "os/KeyValueDB.h"
+#include "os/SequencerPosition.h"
+#include "os/FDCache.h"
 
 #include "include/uuid.h"
 

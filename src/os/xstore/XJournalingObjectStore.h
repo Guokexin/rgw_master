@@ -15,8 +15,8 @@
 #ifndef CEPH_XJOURNALINGOBJECTSTORE_H
 #define CEPH_XJOURNALINGOBJECTSTORE_H
 
-#include "ObjectStore.h"
-#include "Journal.h"
+#include "os/ObjectStore.h"
+#include "os/Journal.h"
 #include "XJournal.h"
 #include "common/RWLock.h"
 

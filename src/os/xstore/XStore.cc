@@ -31,18 +31,9 @@
 
 #include "include/compat.h"
 #include "include/linux_fiemap.h"
-#include "os/xstore/mscache/mscache_expt.h"
-#include "os/xstore/mscache/backend_aio.h"
-#include "os/xstore/mscache/mscache_bm.h"
-#include "os/xstore/mscache/mscache_common.h"
-#include "os/xstore/mscache/mscache_debug.h"
-#include "os/xstore/mscache/mscache_list.h"
-#include "os/xstore/mscache/mscache_type.h"
-#include "os/xstore/mscache/rcache_bm.h"
-#include "os/xstore/mscache/rcache.h"
-#include "os/xstore/mscache/mscache.h"
+#include "mscache/mscache_expt.h"
 #include "common/xattr.h"
-#include "chain_xattr.h"
+#include "os/chain_xattr.h"
 
 #if defined(DARWIN) || defined(__FreeBSD__)
 #include <sys/param.h>
@@ -54,10 +45,10 @@
 #include <sstream>
 
 #include "XStore.h"
-#include "GenericFileStoreBackend.h"
-#include "BtrfsFileStoreBackend.h"
-#include "XfsFileStoreBackend.h"
-#include "ZFSFileStoreBackend.h"
+#include "os/GenericFileStoreBackend.h"
+#include "os/BtrfsFileStoreBackend.h"
+#include "os/XfsFileStoreBackend.h"
+#include "os/ZFSFileStoreBackend.h"
 #include "common/BackTrace.h"
 #include "include/types.h"
 #include "XJournal.h"
@@ -75,9 +66,9 @@
 #include "common/perf_counters.h"
 #include "common/sync_filesystem.h"
 #include "common/fd.h"
-#include "HashIndex.h"
-#include "DBObjectMap.h"
-#include "KeyValueDB.h"
+#include "os/HashIndex.h"
+#include "os/DBObjectMap.h"
+#include "os/KeyValueDB.h"
 #include "common/ceph_crypto.h"
 using ceph::crypto::SHA1;
 

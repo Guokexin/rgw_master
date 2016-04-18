@@ -8,7 +8,7 @@
 #include "global/global_init.h"
 #include "common/config.h"
 #include "common/Finisher.h"
-#include "os/XJournal.h"
+#include "os/xstore/XJournal.h"
 #include "include/Context.h"
 #include "common/Mutex.h"
 #include "common/safe_io.h"

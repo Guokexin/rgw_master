@@ -17,7 +17,7 @@
 #include "ObjectStore.h"
 #include "common/Formatter.h"
 #include "FileStore.h"
-#include "XStore.h"
+#include "xstore/XStore.h"
 #include "MemStore.h"
 #include "KeyValueStore.h"
 #include "common/safe_io.h"

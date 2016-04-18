@@ -20,7 +20,7 @@
 #include "os/ObjectStore.h"
 #include "os/FileStore.h"
 #include "os/KeyValueStore.h"
-#include "os/XStore.h"
+#include "os/xstore/XStore.h"
 #include "include/Context.h"
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"

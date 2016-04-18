@@ -19,7 +19,7 @@
 #include <deque>
 using std::deque;
 
-#include "Journal.h"
+#include "os/Journal.h"
 #include "common/Cond.h"
 #include "common/Mutex.h"
 #include "common/Thread.h"

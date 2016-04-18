@@ -20,7 +20,7 @@
 #include "include/color.h"
 #include "common/io_priority.h"
 #include "common/perf_counters.h"
-#include "os/XStore.h"
+#include "os/xstore/XStore.h"
 
 #include "include/compat.h"
 

@@ -16,7 +16,7 @@
 #define CEPH_GENERICFILESTOREBACKEDN_H
 
 #include "FileStore.h"
-#include "XStore.h"
+#include "xstore/XStore.h"
 
 class SloppyCRCMap;
 
