@@ -118,11 +118,6 @@ struct RequestLockPayload {
 };
 
 struct HeaderUpdatePayload {
-  HeaderUpdatePayload() : metadata_updated(false) {}
-  HeaderUpdatePayload(bool md_updated) : metadata_updated(md_updated) {}
-
-  bool metadata_updated;
-
   void encode(bufferlist &bl) const;
   void decode(__u8 version, bufferlist::iterator &iter);
   void dump(Formatter *f) const;
