@@ -52,8 +52,7 @@ namespace librbd {
     int notify_snap_create(const std::string &snap_name);
 
     static void notify_header_update(librados::IoCtx &io_ctx,
-				     const std::string &oid,
-				     bool metadata_changed = false);
+				     const std::string &oid);
 
   private:
 
