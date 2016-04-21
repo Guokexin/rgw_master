@@ -20,6 +20,7 @@
 #include "os/ObjectStore.h"
 #include "os/FileStore.h"
 #include "os/KeyValueStore.h"
+#include "os/xstore/XStore.h"
 #include "include/Context.h"
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
@@ -60,6 +61,8 @@ public:
   }
 
   virtual void TearDown() {
+    EXPECT_EQ(0, ::system("rm -fr store_test_temp_dir"));
+    EXPECT_EQ(0, ::system("rm -fr store_test_temp_journal"));
     store->umount();
   }
 };
@@ -1739,7 +1742,7 @@ TEST_P(StoreTest, SetAllocHint) {
 INSTANTIATE_TEST_CASE_P(
   ObjectStore,
   StoreTest,
-  ::testing::Values("memstore", "filestore", "keyvaluestore"));
+  ::testing::Values("xstore", "memstore", "filestore", "keyvaluestore"));
 
 #else
 

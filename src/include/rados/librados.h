@@ -80,6 +80,8 @@ enum {
   LIBRADOS_OP_FLAG_FADVISE_DONTNEED   = 0x20,
   // indicate read/write data will not accessed again (by *this* client)
   LIBRADOS_OP_FLAG_FADVISE_NOCACHE    = 0x40,
+  // prefetch data which will be accessed in the near future
+  LIBRADOS_OP_FLAG_FADVISE_PREFETCH   = 0x80,
 };
 /** @endcond */
 

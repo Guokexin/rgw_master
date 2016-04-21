@@ -2102,13 +2102,6 @@ ceph_tid_t Objecter::_op_submit(Op *op, RWLock::Context& lc)
 
   _send_op_account(op);
 
-  // send?
-  ldout(cct, 10) << "_op_submit oid " << op->target.base_oid
-           << " " << op->target.base_oloc << " " << op->target.target_oloc
-	   << " " << op->ops << " tid " << op->tid
-           << " osd." << (!s->is_homeless() ? s->osd : -1)
-           << dendl;
-
   assert(op->target.flags & (CEPH_OSD_FLAG_READ|CEPH_OSD_FLAG_WRITE));
 
   bool need_send = false;
@@ -2141,6 +2134,14 @@ ceph_tid_t Objecter::_op_submit(Op *op, RWLock::Context& lc)
   s->lock.get_write();
   if (op->tid == 0)
     op->tid = last_tid.inc();
+
+  // send?
+  ldout(cct, 10) << "_op_submit oid " << op->target.base_oid
+           << " " << op->target.base_oloc << " " << op->target.target_oloc
+	   << " " << op->ops << " tid " << op->tid
+           << " osd." << (!s->is_homeless() ? s->osd : -1)
+           << dendl;
+
   _session_op_assign(s, op);
 
   if (need_send) {

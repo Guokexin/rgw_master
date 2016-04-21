@@ -100,8 +100,10 @@ SUBSYS(osd, 0, 5)
 SUBSYS(optracker, 0, 5)
 SUBSYS(objclass, 0, 5)
 SUBSYS(filestore, 1, 3)
+SUBSYS(xstore, 1, 3)
 SUBSYS(keyvaluestore, 1, 3)
 SUBSYS(journal, 1, 3)
+SUBSYS(xjournal, 1, 3)
 SUBSYS(ms, 0, 5)
 SUBSYS(mon, 1, 5)
 SUBSYS(monc, 0, 10)
@@ -119,6 +121,7 @@ SUBSYS(asok, 1, 5)
 SUBSYS(throttle, 1, 1)
 SUBSYS(refs, 0, 0)
 SUBSYS(xio, 1, 5)
+SUBSYS(mscache, 1, 5)
 
 OPTION(key, OPT_STR, "")
 OPTION(keyfile, OPT_STR, "")
@@ -856,6 +859,11 @@ OPTION(filestore_kill_at, OPT_INT, 0)            // inject a failure at the n'th
 OPTION(filestore_inject_stall, OPT_INT, 0)       // artificially stall for N seconds in op queue thread
 OPTION(filestore_fail_eio, OPT_BOOL, true)       // fail/crash on EIO
 OPTION(filestore_debug_verify_split, OPT_BOOL, false)
+
+OPTION(xstore_mscache_enable, OPT_BOOL, true)
+OPTION(xstore_mscache_aio_enable, OPT_BOOL, true)
+OPTION(xstore_max_commit_entries, OPT_BOOL, 512)
+
 OPTION(journal_dio, OPT_BOOL, true)
 OPTION(journal_aio, OPT_BOOL, true)
 OPTION(journal_force_aio, OPT_BOOL, false)

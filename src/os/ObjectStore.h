@@ -97,6 +97,7 @@ protected:
   string path;
 
 public:
+  static string type;
   /**
    * create - create an ObjectStore instance.
    *
@@ -429,7 +430,6 @@ public:
     } __attribute__ ((packed)) ;
 
   private:
-    TransactionData data;
 
     void *osr; // NULL on replay
 
@@ -443,7 +443,6 @@ public:
     __le32 object_id;
 
     bufferlist data_bl;
-    bufferlist op_bl;
 
     bufferptr op_ptr;
 
@@ -452,6 +451,8 @@ public:
     list<Context *> on_applied_sync;
 
   public:
+    TransactionData data;
+    bufferlist op_bl;
 
     /* Operations on callback contexts */
     void register_on_applied(Context *c) {
@@ -1021,6 +1022,7 @@ public:
       }
       data.ops++;
     }
+
     /**
      * zero out the indicated byte range within an object. Some
      * ObjectStore instances may optimize this to release the
@@ -2177,6 +2179,8 @@ public:
   virtual void sync() {}
   virtual void flush() {}
   virtual void sync_and_flush() {}
+
+  string get_type() { return type; }
 
   virtual int dump_journal(ostream& out) { return -EOPNOTSUPP; }
 

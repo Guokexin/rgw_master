@@ -40,13 +40,34 @@ public:
   class FD {
   public:
     const int fd;
-    FD(int _fd) : fd(_fd) {
+    atomic_t aio;
+    atomic_t truncate;
+    Mutex lock;
+    Cond cond;;
+    FD(int _fd) : fd(_fd), lock("FD::lock") {
       assert(_fd >= 0);
     }
     int operator*() const {
       return fd;
     }
+    bool has_truncate() {
+      Mutex::Locker l(lock);
+      return truncate.read() > 0;
+    }
+    bool has_aio() {
+      Mutex::Locker l(lock);
+      return aio.read() > 0;
+    }
+    void flush() {
+      lock.Lock();
+      while (aio.read() != 0) {
+        cond.Wait(lock);
+      }
+      lock.Unlock();
+    }
     ~FD() {
+      assert(truncate.read() == 0);
+      assert(aio.read() == 0);
       VOID_TEMP_FAILURE_RETRY(::close(fd));
     }
   };

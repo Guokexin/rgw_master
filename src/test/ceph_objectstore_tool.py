@@ -124,10 +124,10 @@ def cat_file(level, filename):
     print "<EOF>"
 
 
-def vstart(new):
+def vstart(new, type):
     print "vstarting....",
     OPT = new and "-n" or ""
-    call("MON=1 OSD=4 CEPH_PORT=7400 ./vstart.sh -l {opt} -d mon osd > /dev/null 2>&1".format(opt=OPT), shell=True)
+    call("MON=1 OSD=4 CEPH_PORT=7400 ./vstart.sh -l {opt} -T {type} -d mon osd> /dev/null 2>&1".format(opt=OPT, type=type), shell=True)
     print "DONE"
 
 def test_failure_tty(cmd, errmsg):
@@ -242,11 +242,13 @@ def main(argv):
     pid = os.getpid()
     TESTDIR = "/tmp/test.{pid}".format(pid=pid)
     DATADIR = "/tmp/data.{pid}".format(pid=pid)
-    CFSD_PREFIX = "./ceph-objectstore-tool --data-path " + OSDDIR + "/{osd} --journal-path " + OSDDIR + "/{osd}.journal "
+    STORE = "filestore"
+    vstart(new=True, type=STORE)
+    CFSD_PREFIX = "./ceph-objectstore-tool --type " + STORE + " --data-path " + OSDDIR + "/{osd} --journal-path " + OSDDIR + "/{osd}.journal "
+    CFSD_PREFIX2 = "./ceph-objectstore-tool --data-path " + OSDDIR + "/{osd} --journal-path " + OSDDIR + "/{osd}.journal "
     PROFNAME = "testecprofile"
 
     os.environ['CEPH_CONF'] = CEPH_CONF
-    vstart(new=True)
     wait_for_health()
 
     cmd = "./ceph osd pool create {pool} {pg} {pg} replicated".format(pool=REP_POOL, pg=PG_COUNT)
@@ -463,8 +465,8 @@ def main(argv):
     ERRORS += test_failure_tty(cmd, "stdin is a tty and no --file filename specified")
 
     # Specify a bad --type
-    cmd = (CFSD_PREFIX + "--type foobar --op list --pgid {pg}").format(osd=ONEOSD, pg=ONEPG)
-    ERRORS += test_failure(cmd, "Must provide --type (filestore, memstore, keyvaluestore)")
+    cmd = (CFSD_PREFIX2 + "--type foobar --op list --pgid {pg}").format(osd=ONEOSD, pg=ONEPG)
+    ERRORS += test_failure(cmd, "Must provide --type (filestore, xstore, memstore, keyvaluestore)")
 
     # Don't specify a data-path
     cmd = "./ceph-objectstore-tool --journal-path {dir}/{osd}.journal --type memstore --op list --pgid {pg}".format(dir=OSDDIR, osd=ONEOSD, pg=ONEPG)
@@ -472,6 +474,10 @@ def main(argv):
 
     # Don't specify a journal-path for filestore
     cmd = "./ceph-objectstore-tool --type filestore --data-path {dir}/{osd} --op list --pgid {pg}".format(dir=OSDDIR, osd=ONEOSD, pg=ONEPG)
+    ERRORS += test_failure(cmd, "Must provide --journal-path")
+
+    # Don't specify a journal-path for xstore
+    cmd = "./ceph-objectstore-tool --type xstore --data-path {dir}/{osd} --op list --pgid {pg}".format(dir=OSDDIR, osd=ONEOSD, pg=ONEPG)
     ERRORS += test_failure(cmd, "Must provide --journal-path")
 
     # Test --op list and generate json for all objects
@@ -873,7 +879,7 @@ def main(argv):
     else:
         logging.warning("SKIPPING CHECKING IMPORT DATA DUE TO PREVIOUS FAILURES")
 
-    vstart(new=False)
+    vstart(new=False, type=STORE)
     wait_for_health()
 
     if EXP_ERRORS == 0 and RM_ERRORS == 0 and IMP_ERRORS == 0:
@@ -893,7 +899,7 @@ def main(argv):
                 if string.find(pg, "{id}.".format(id=REPID)) != 0:
                     continue
                 file = os.path.join(dir, pg)
-                cmd = "./ceph-objectstore-tool import-rados {pool} {file}".format(pool=NEWPOOL, file=file)
+                cmd = "./ceph-objectstore-tool --type {type} import-rados {pool} {file}".format(type=STORE, pool=NEWPOOL, file=file)
                 logging.debug(cmd)
                 ret = call(cmd, shell=True, stdout=nullfd)
                 if ret != 0:

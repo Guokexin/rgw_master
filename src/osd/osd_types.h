@@ -507,6 +507,9 @@ public:
   bool is_pg_prefix(spg_t& pgid) const;
   bool is_pg(spg_t& pgid, snapid_t& snap) const;
   bool is_temp(spg_t& pgid) const;
+  bool is_meta() const {
+    return str == "meta";
+  }
   bool is_removal(uint64_t *seq, spg_t *pgid) const;
   void encode(bufferlist& bl) const;
   void decode(bufferlist::iterator& bl);
@@ -2890,6 +2893,7 @@ struct object_info_t {
     FLAG_OMAP_DIGEST = 1 << 5,  // has omap crc
     // ...
     FLAG_USES_TMAP = 1<<8,  // deprecated; no longer used.
+    FLAG_UNSTABLE = 1<<30,  // unstable object.
   } flag_t;
 
   flag_t flags;
@@ -2910,6 +2914,8 @@ struct object_info_t {
       s += "|data_digest";
     if (flags & FLAG_OMAP_DIGEST)
       s += "|omap_digest";
+    if (flags & FLAG_UNSTABLE)
+      s += "|unstable";
     if (s.length())
       return s.substr(1);
     return s;
@@ -2960,6 +2966,17 @@ struct object_info_t {
   }
   bool is_omap_digest() const {
     return test_flag(FLAG_OMAP_DIGEST);
+  }
+
+  bool is_unstable() const {
+    return test_flag(FLAG_UNSTABLE);
+  }
+
+  void set_unstable() {
+    set_flag(FLAG_UNSTABLE);
+  }
+  void clear_unstable() {
+    clear_flag(FLAG_UNSTABLE);
   }
 
   void set_data_digest(__u32 d) {

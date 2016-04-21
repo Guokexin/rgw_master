@@ -1365,6 +1365,17 @@ void ReplicatedBackend::calc_head_subsets(
 	   << " clone_overlap " << snapset.clone_overlap << dendl;
 
   uint64_t size = obc->obs.oi.size;
+  if (store->get_type() == "xstore") {
+    struct stat st;
+    int r = store->stat(coll, obc->obs.oi.soid, &st);
+    assert(r >= 0);
+    if (obc->obs.oi.size != st.st_size) {
+      derr << __func__ << " meta data mismatch oid " << head
+           << " oi size " << obc->obs.oi.size << " != " << st.st_size
+           << " snapset " << snapset << " oi " << obc->obs.oi << dendl;
+    }
+    size = st.st_size;
+  }
   if (size)
     data_subset.insert(0, size);
 
@@ -1659,8 +1670,21 @@ void ReplicatedBackend::prep_push(ObjectContextRef obc,
 			     PushOp *pop)
 {
   interval_set<uint64_t> data_subset;
-  if (obc->obs.oi.size)
-    data_subset.insert(0, obc->obs.oi.size);
+  if (store->get_type() != "xstore") {
+    if (obc->obs.oi.size)
+      data_subset.insert(0, obc->obs.oi.size);
+  } else {
+    struct stat st;
+    int r = store->stat(coll, soid, &st);
+    assert(r >= 0);
+    if (obc->obs.oi.size != st.st_size) {
+      derr << __func__ << " meta data mismatch oid " << soid
+           << " oi size " << obc->obs.oi.size << " != " << st.st_size
+           << " oi " << obc->obs.oi << dendl;
+    }
+    if (st.st_size)
+      data_subset.insert(0, st.st_size);
+  }
   map<hobject_t, interval_set<uint64_t> > clone_subsets;
 
   prep_push(obc, soid, peer,
@@ -1835,7 +1859,7 @@ bool ReplicatedBackend::handle_pull_response(
   interval_set<uint64_t> data_included = pop.data_included;
   bufferlist data;
   data.claim(pop.data);
-  dout(10) << "handle_pull_response "
+  dout(10) << "handle_pull_response from " << from
 	   << pop.recovery_info
 	   << pop.after_progress
 	   << " data.size() is " << data.length()
@@ -1931,7 +1955,7 @@ void ReplicatedBackend::handle_push(
   pg_shard_t from, PushOp &pop, PushReplyOp *response,
   ObjectStore::Transaction *t)
 {
-  dout(10) << "handle_push "
+  dout(10) << "handle_push from " << from << " "
 	   << pop.recovery_info
 	   << pop.after_progress
 	   << dendl;

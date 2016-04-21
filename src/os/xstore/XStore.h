@@ -13,8 +13,8 @@
  */
 
 
-#ifndef CEPH_FILESTORE_H
-#define CEPH_FILESTORE_H
+#ifndef CEPH_XSTORE_H
+#define CEPH_XSTORE_H
 
 #include "include/types.h"
 
@@ -28,20 +28,20 @@ using namespace std;
 
 #include "include/assert.h"
 
-#include "ObjectStore.h"
-#include "JournalingObjectStore.h"
+#include "os/ObjectStore.h"
+#include "os/FileStore.h"
+#include "os/xstore/XJournalingObjectStore.h"
 
 #include "common/Timer.h"
 #include "common/WorkQueue.h"
 
 #include "common/Mutex.h"
-#include "HashIndex.h"
-#include "IndexManager.h"
-#include "DBObjectMap.h"
-#include "KeyValueDB.h"
-#include "SequencerPosition.h"
-#include "FDCache.h"
-#include "WBThrottle.h"
+#include "os/HashIndex.h"
+#include "os/IndexManager.h"
+#include "os/DBObjectMap.h"
+#include "os/KeyValueDB.h"
+#include "os/SequencerPosition.h"
+#include "os/FDCache.h"
 
 #include "include/uuid.h"
 
@@ -51,60 +51,43 @@ using namespace std;
 # define FALLOC_FL_PUNCH_HOLE 0x2
 #endif
 
-#if defined(__linux__)
-# ifndef BTRFS_SUPER_MAGIC
-static const __SWORD_TYPE BTRFS_SUPER_MAGIC(0x9123683E);
-# endif
-# ifndef XFS_SUPER_MAGIC
-static const __SWORD_TYPE XFS_SUPER_MAGIC(0x58465342);
-# endif
-#ifndef ZFS_SUPER_MAGIC
-static const __SWORD_TYPE ZFS_SUPER_MAGIC(0x2fc12fc1);
-#endif
-#endif
-
-class FileStoreBackend;
-
 #define CEPH_FS_FEATURE_INCOMPAT_SHARDS CompatSet::Feature(1, "sharded objects")
 
-class FSSuperblock {
-public:
-  CompatSet compat_features;
-  string omap_backend;
-
-  FSSuperblock() { }
-
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::iterator &bl);
-  void dump(Formatter *f) const;
-  static void generate_test_instances(list<FSSuperblock*>& o);
+enum {
+  l_xs_first = 84000,
+  l_xs_jq_max_ops,
+  l_xs_jq_ops,
+  l_xs_j_ops,
+  l_xs_jq_max_bytes,
+  l_xs_jq_bytes,
+  l_xs_j_bytes,
+  l_xs_j_lat,
+  l_xs_j_wr,
+  l_xs_j_wr_bytes,
+  l_xs_j_full,
+  l_xs_omap_cache_shard_flush,
+  l_xs_fdcache,
+  l_xs_fdcache_hit,
+  l_xs_committing,
+  l_xs_commit,
+  l_xs_commit_len,
+  l_xs_commit_lat,
+  l_xs_oq_max_ops,
+  l_xs_oq_ops,
+  l_xs_ops,
+  l_xs_oq_max_bytes,
+  l_xs_oq_bytes,
+  l_xs_bytes,
+  l_xs_apply_lat,
+  l_xs_queue_lat,
+  l_xs_wal_op,
+  l_xs_ack_entry,
+  l_xs_ack_commit,
+  l_xs_last,
 };
-WRITE_CLASS_ENCODER(FSSuperblock)
-
-inline ostream& operator<<(ostream& out, const FSSuperblock& sb)
-{
-  return out << "sb(" << sb.compat_features << "): "
-             << sb.omap_backend;
-}
-
-class Store {
-public:
-  virtual int _do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) = 0;
-  virtual int _do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) = 0;
-  Store(int op_fd, int basedir_fd, int current_fd, size_t blk_size, const string &basedir,
-    const int crc_bs): op_fd(op_fd), basedir_fd(basedir_fd), current_fd(current_fd),
-    blk_size(blk_size), basedir(basedir), m_filestore_sloppy_crc_block_size(crc_bs) {}
-  virtual ~Store() {}
-
-  int op_fd, basedir_fd, current_fd;
-  size_t blk_size;
-  string basedir, current_fn;
-  int m_filestore_sloppy_crc_block_size;
-};
-
-class FileStore : public JournalingObjectStore,
-                  public md_config_obs_t,
-                  public Store
+class XStore : public XJournalingObjectStore,
+               public md_config_obs_t,
+               public Store
 {
   static const uint32_t target_version = 4;
 public:
@@ -163,7 +146,7 @@ private:
       map<ghobject_t, map<string, bufferlist> > pgmeta_keys;
       PGMetaShard(string name): pgmeta_shard_lock(name.c_str()), bytes(0) {}
     };
-    FileStore *store;
+    XStore *store;
     const int pgmeta_shards;
     vector<PGMetaShard*> shards;
     uint64_t shard_bytes_limit;
@@ -262,16 +245,26 @@ private:
       return false;
     }
 
-    PGMetaCache(FileStore *s, int num, uint64_t limit):
+    PGMetaCache(XStore *s, int num, uint64_t limit):
       store(s), pgmeta_shards(num), shard_bytes_limit(limit) {
       char lock_name[32] = {0};
       for (int i = 0; i < num; ++i) {
-        snprintf(lock_name, sizeof(lock_name), "%s.%d", "FileStore:PGMetaCache:", i);
+        snprintf(lock_name, sizeof(lock_name), "%s.%d", "XStore:PGMetaCache:", i);
         PGMetaShard *shard = new PGMetaShard(lock_name);
         shards.push_back(shard);
       }
     }
   } pgmeta_cache;
+
+  ghobject_t txn_object;
+  bool m_enable_mscache;
+  bool m_enable_mscache_aio;
+
+  string omap_get_keyname(uint64_t seq);
+  int _omap_set_txnseq(uint64_t seq);
+  int _omap_rmrange_txnseq(uint64_t from, uint64_t to);
+  int _omap_check_txnseq(uint64_t seq);
+  bool txn_done(uint64_t op_seq);
 
   // helper fns
   int get_cdir(const coll_t& cid, char *s, int len);
@@ -294,33 +287,106 @@ private:
   bool stop;
   void sync_entry();
   struct SyncThread : public Thread {
-    FileStore *fs;
-    SyncThread(FileStore *f) : fs(f) {}
+    XStore *fs;
+    SyncThread(XStore *f) : fs(f) {}
     void *entry() {
       fs->sync_entry();
       return 0;
     }
   } sync_thread;
 
+  Cond jwa_cond;
+  Mutex jwa_lock;
+  bool jwa_stop;
+  list<Context*> acked_queue;
+public:
+  struct Op;
+  class OpSequencer;
+  list<Op*> jwa_queue;
+  uint64_t *jwa_seq;
+  uint64_t m_xstore_max_commit_entries;
+
+  void _jwa_entry();
+  struct JournaledWrittenAckThread : public Thread {
+    XStore *fs;
+    JournaledWrittenAckThread(XStore *f) : fs(f) {}
+    void *entry() {
+      fs->_jwa_entry();
+      return 0;
+    }
+  } jwa_thread;
+
   // -- op workqueue --
   struct Op {
     utime_t start;
     uint64_t op;
     list<Transaction*> tls;
-    Context *onreadable, *onreadable_sync;
+    Context *ondisk, *onreadable, *onreadable_sync;
     uint64_t ops, bytes;
     TrackedOpRef osd_op;
+    bool wal;
+    OpSequencer *osr;
+    enum apply_state {
+      STATE_INIT     = 0,
+      STATE_WRITE    = 1,
+      STATE_JOURNAL  = 2,
+      STATE_COMMIT   = 3,
+      STATE_ACK      = 4,
+      STATE_DONE     = 5,
+    } state;
+    atomic_t aio;
+    list<bufferptr> aio_bl;
+    Mutex lock;
+
+    Op() : lock("Op::lock") {}
+    bool has_aio() {
+      assert(lock.is_locked());
+      return aio.read() > 0;
+    }
+    void get_lock() {
+      lock.Lock();
+    }
+    void put_lock() {
+      lock.Unlock();
+    }
   };
+
+  struct AioArgs {
+    XStore *fs;
+    Op *op;
+    OpSequencer *osr;
+    FDRef fd;
+    bool truncate;
+    AioArgs(XStore *fs, Op *op, OpSequencer *osr, FDRef& fd, bool tr):
+      fs(fs), op(op), osr(osr), fd(fd), truncate(tr) {}
+  };
+
+  friend ostream& operator<<(ostream& out, const Op& o)
+  {
+    out << " " << &o << " seq " << o.op << " ondisk " << o.ondisk
+        << " osr " << *(o.osr) << "/" << o.osr->parent << " wal " << o.wal;
+    if (o.osd_op)
+      out << " op " << o.osd_op;
+    out << " ";
+    return out;
+  }
+
   class OpSequencer : public Sequencer_impl {
-    Mutex qlock; // to protect q, for benefit of flush (peek/dequeue also protected by lock)
     list<Op*> q;
+    list<Op*> in_q;
     list<uint64_t> jq;
     list<pair<uint64_t, Context*> > flush_commit_waiters;
     Cond cond;
   public:
+    Mutex qlock; // to protect q, for benefit of flush (peek/dequeue also protected by lock)
     Sequencer *parent;
     Mutex apply_lock;  // for apply mutual exclusion
     int id;
+    Cond pending_aio_cond;
+
+    Mutex pending_lock;
+    atomic_t pending_wal;
+    Cond pending_cond;
     
     /// get_max_uncompleted
     bool _get_max_uncompleted(
@@ -371,6 +437,14 @@ private:
       }
     }
 
+    bool empty() {
+      assert(qlock.is_locked());
+      return in_q.empty();
+    }
+    size_t size() {
+      Mutex::Locker l(qlock);
+      return q.size();
+    }
     void queue_journal(uint64_t s) {
       Mutex::Locker l(qlock);
       jq.push_back(s);
@@ -389,6 +463,14 @@ private:
       assert(apply_lock.is_locked());
       return q.front();
     }
+    void queue_inq(Op *o) {
+      Mutex::Locker l(qlock);
+      in_q.push_back(o);
+    }
+    list<Op*> *get_inq() {
+      assert(qlock.is_locked());
+      return &in_q;
+    }
 
     Op *dequeue(list<Context*> *to_queue) {
       assert(to_queue);
@@ -399,6 +481,20 @@ private:
       cond.Signal();
 
       _wake_flush_waiters(to_queue);
+      return o;
+    }
+
+    void dequeue() {
+      assert(apply_lock.is_locked());
+      Mutex::Locker l(qlock);
+      q.pop_front();
+    }
+
+    Op* dequeue_inq() {
+      assert(apply_lock.is_locked());
+      Mutex::Locker l(qlock);
+      Op *o = in_q.front();
+      in_q.pop_front();
       return o;
     }
 
@@ -436,9 +532,10 @@ private:
     }
 
     OpSequencer(int i)
-      : qlock("FileStore::OpSequencer::qlock", false, false),
+      : qlock("XStore::OpSequencer::qlock", false, false),
 	parent(0),
-	apply_lock("FileStore::OpSequencer::apply_lock", false, false), id(i) {}
+	apply_lock("XStore::OpSequencer::apply_lock", false, false), id(i),
+	pending_lock("XStore::OpSequencer::pending_lock", false, false) {}
     ~OpSequencer() {
       assert(q.empty());
     }
@@ -451,7 +548,6 @@ private:
   friend ostream& operator<<(ostream& out, const OpSequencer& s);
 
   FDCache fdcache;
-  vector<WBThrottle *> wbthrottles;
 
   Sequencer default_osr;
   int next_osr_id;
@@ -461,15 +557,15 @@ private:
   Mutex op_throttle_lock;
   const int ondisk_finisher_num;
   const int apply_finisher_num;
-  const int wbthrottle_num;
   vector<Finisher*> ondisk_finishers;
   vector<Finisher*> apply_finishers;
+  Finisher* callback_finisher;
 
   ThreadPool op_tp;
   struct OpWQ : public ThreadPool::WorkQueue<OpSequencer> {
-    FileStore *store;
-    OpWQ(FileStore *fs, time_t timeout, time_t suicide_timeout, ThreadPool *tp)
-      : ThreadPool::WorkQueue<OpSequencer>("FileStore::OpWQ", timeout, suicide_timeout, tp), store(fs) {}
+    XStore *store;
+    OpWQ(XStore *fs, time_t timeout, time_t suicide_timeout, ThreadPool *tp)
+      : ThreadPool::WorkQueue<OpSequencer>("XStore::OpWQ", timeout, suicide_timeout, tp), store(fs) {}
 
     bool _enqueue(OpSequencer *osr) {
       store->op_queue.push_back(osr);
@@ -502,21 +598,29 @@ private:
   void _do_op(OpSequencer *o, ThreadPool::TPHandle &handle);
   void _finish_op(OpSequencer *o);
   Op *build_op(list<Transaction*>& tls,
-	       Context *onreadable, Context *onreadable_sync,
-	       TrackedOpRef osd_op);
+	       Context *ondisk, Context *onreadable, Context *onreadable_sync,
+	       TrackedOpRef osd_op,
+               OpSequencer *osr);
+  void aio_callback(AioArgs *args);
   void queue_op(OpSequencer *osr, Op *o);
   void op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle = NULL);
   void op_queue_release_throttle(Op *o);
-  void _journaled_ahead(OpSequencer *osr, Op *o, Context *ondisk);
-  friend struct C_JournaledAhead;
+  void _journaled_written(Op *o);
+  void _journaled_ack_written(list<Op *> acks);
+  bool get_replay_txns(list<Transaction*>& tls, list<Transaction*>* jtls);
+  friend struct C_JournaledWritten;
+  friend struct C_JournaledAckWritten;
 
   int open_journal();
 
   PerfCounters *logger;
+  map<coll_t, set<ghobject_t> > replaying_oids;
 
 public:
   int lfn_find(const ghobject_t& oid, const Index& index, 
                                   IndexedPath *path = NULL);
+  void reset_object_size();
+  int truncate_and_check(const FDRef& fd, off_t length);
   int lfn_truncate(coll_t cid, const ghobject_t& oid, off_t length);
   int lfn_stat(const coll_t& cid, const ghobject_t& oid, struct stat *buf);
   int lfn_open(
@@ -529,16 +633,15 @@ public:
   void lfn_close(FDRef fd);
   int lfn_link(coll_t c, coll_t newcid, const ghobject_t& o, const ghobject_t& newoid) ;
   int lfn_unlink(coll_t cid, const ghobject_t& o, const SequencerPosition &spos,
-		 bool force_clear_omap, int osr);
+		 bool force_clear_omap, int osrid);
 
 public:
-  FileStore(const std::string &base, const std::string &jdev,
+  XStore(const std::string &base, const std::string &jdev,
     osflagbits_t flags = 0,
-    const char *internal_name = "filestore", bool update_to=false);
-  ~FileStore();
+    const char *internal_name = "XStore", bool update_to=false);
+  ~XStore();
 
   int _detect_fs();
-  int _sanity_check_fs();
   
   bool test_mount_in_use();
   int read_op_seq(uint64_t *seq);
@@ -567,7 +670,7 @@ public:
    *
    * Before sharded ghobject_t can be specified this function must be called
    *
-   * Once this function is called the FileStore is not mountable by prior releases
+   * Once this function is called the XStore is not mountable by prior releases
    */
   void set_allow_sharded_objects();
 
@@ -583,19 +686,23 @@ public:
   int statfs(struct statfs *buf);
 
   int _do_transactions(
-    list<Transaction*> &tls, uint64_t op_seq,
+    list<Transaction*> &tls, uint64_t op_seq, Op* o,
     ThreadPool::TPHandle *handle);
+  int do_transactions(list<Transaction*> &tls, uint64_t op_seq, Op *o) {
+    return _do_transactions(tls, op_seq, o, 0);
+  }
   int do_transactions(list<Transaction*> &tls, uint64_t op_seq) {
-    return _do_transactions(tls, op_seq, 0);
+    return _do_transactions(tls, op_seq, NULL, 0);
   }
   unsigned _do_transaction(
-    Transaction& t, uint64_t op_seq, int trans_num,
+    Transaction& t, uint64_t op_seq, int trans_num, Op *o,
     ThreadPool::TPHandle *handle);
 
   int queue_transactions(Sequencer *osr, list<Transaction*>& tls,
 			 TrackedOpRef op = TrackedOpRef(),
 			 ThreadPool::TPHandle *handle = NULL);
 
+  bool _should_wal(list<Transaction*> &tls);
   /**
    * set replay guard xattr on given file
    *
@@ -659,22 +766,53 @@ public:
     bufferlist& bl,
     uint32_t op_flags = 0,
     bool allow_eio = false);
+  int direct_read(
+    FDRef fd,
+    const ghobject_t& oid,
+    bufferptr &bptr,
+    off_t offset,
+    size_t len,
+    uint32_t op_flags = 0);
+  int direct_write(
+    FDRef fd,
+    const ghobject_t& oid,
+    const bufferlist &bl,
+    off_t offset,
+    size_t len,
+    uint32_t op_flags = 0,
+    Op *op = NULL,
+    OpSequencer *osr = NULL);
   int fiemap(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, bufferlist& bl);
 
   int _touch(coll_t cid, const ghobject_t& oid);
   int _write(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len,
-	      const bufferlist& bl, uint32_t fadvise_flags, int osr);
-  int _zero(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, int osr);
+	      const bufferlist& bl, uint32_t fadvise_flags, int osrid,
+              Op *op = NULL, OpSequencer *osr = NULL);
+  int _zero(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, int osrid);
   int _truncate(coll_t cid, const ghobject_t& oid, uint64_t size);
   int _clone(coll_t cid, const ghobject_t& oldoid, const ghobject_t& newoid,
 	     const SequencerPosition& spos);
   int _clone_range(coll_t cid, const ghobject_t& oldoid, const ghobject_t& newoid,
 		   uint64_t srcoff, uint64_t len, uint64_t dstoff,
 		   const SequencerPosition& spos);
-  int _do_clone_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff);
-  int _do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff);
-  int _do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff);
-  int _remove(coll_t cid, const ghobject_t& oid, const SequencerPosition &spos, int osr);
+  int _do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)
+  {
+    return -EOPNOTSUPP;
+  }
+  int _do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)
+  {
+    return -EOPNOTSUPP;
+  }
+  int _do_clone_range(FDRef& from, const ghobject_t& soid,
+                      FDRef& to, const ghobject_t& doid,
+                      uint64_t srcoff, uint64_t len, uint64_t dstoff);
+  int _do_sparse_copy_range(FDRef& from, const ghobject_t& soid,
+                            FDRef& to, const ghobject_t& doid,
+                            uint64_t srcoff, uint64_t len, uint64_t dstoff);
+  int _do_copy_range(FDRef& from, const ghobject_t& soid,
+                     FDRef& to, const ghobject_t& doid,
+                     uint64_t srcoff, uint64_t len, uint64_t dstoff);
+  int _remove(coll_t cid, const ghobject_t& oid, const SequencerPosition &spos, int osrid);
 
   int _fgetattr(int fd, const char* name, bufferptr& bp, int* chunks = NULL);
   int _fgetattrs(int fd, map<string, pair<bufferptr, int> >& aset);
@@ -709,6 +847,7 @@ public:
 
   int snapshot(const string& name);
 
+  int object_exist_in_meta(coll_t cid, const ghobject_t& oid, bufferptr &bp);
   // attrs
   int getattr(coll_t cid, const ghobject_t& oid, const char *name, bufferptr &bp);
   int getattrs(coll_t cid, const ghobject_t& oid, map<string,bufferptr>& aset);
@@ -728,7 +867,7 @@ public:
   int _collection_rmattr(coll_t c, const char *name);
   int _collection_setattrs(coll_t cid, map<string,bufferptr> &aset);
   int _collection_remove_recursive(const coll_t &cid,
-				   const SequencerPosition &spos, int osr);
+				   const SequencerPosition &spos, int osrid);
 
   // collections
   int list_collections(vector<coll_t>& ls);
@@ -778,7 +917,7 @@ public:
 		      const SequencerPosition& spos);
   int _collection_move_rename(coll_t oldcid, const ghobject_t& oldoid,
 			      coll_t c, const ghobject_t& o,
-			      const SequencerPosition& spos, int osr);
+			      const SequencerPosition& spos, int osrid);
 
   int _set_alloc_hint(coll_t cid, const ghobject_t& oid,
                       uint64_t expected_object_size,
@@ -814,9 +953,6 @@ private:
   virtual void handle_conf_change(const struct md_config_t *conf,
 			  const std::set <std::string> &changed);
   float m_filestore_commit_timeout;
-  bool m_filestore_journal_parallel;
-  bool m_filestore_journal_trailing;
-  bool m_filestore_journal_writeahead;
   int m_filestore_fiemap_threshold;
   double m_filestore_max_sync_interval;
   double m_filestore_min_sync_interval;
@@ -837,6 +973,7 @@ private:
   bool m_filestore_sloppy_crc;
   uint64_t m_filestore_max_alloc_hint_size;
   long m_fs_type;
+  size_t m_block_size;
 
   //Determined xattr handling based on fs type
   void set_xattr_limits_via_conf();
@@ -857,82 +994,16 @@ private:
   /**
    * read_superblock()
    *
-   * Fill in FileStore::superblock by reading persistent storage
+   * Fill in XStore::superblock by reading persistent storage
    *
    * return value: 0 on success, otherwise negative errno
    */
   int read_superblock();
 
   friend class FileStoreBackend;
-  friend class TestFileStore;
+  friend class TestXStore;
 };
 
-ostream& operator<<(ostream& out, const FileStore::OpSequencer& s);
-
-struct fiemap;
-
-class FileStoreBackend {
-private:
-  Store *store;
-protected:
-  int get_basedir_fd() {
-    return store->basedir_fd;
-  }
-  int get_current_fd() {
-    return store->current_fd;
-  }
-  int get_op_fd() {
-    return store->op_fd;
-  }
-  size_t get_blksize() {
-    return store->blk_size;
-  }
-  const string& get_basedir_path() {
-    return store->basedir;
-  }
-  const string& get_current_path() {
-    return store->current_fn;
-  }
-  int _copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) {
-    if (has_fiemap()) {
-      return store->_do_sparse_copy_range(from, to, srcoff, len, dstoff);
-    } else {
-      return store->_do_copy_range(from, to, srcoff, len, dstoff);
-    }
-  }
-  int get_crc_block_size() {
-    return store->m_filestore_sloppy_crc_block_size;
-  }
-
-public:
-  FileStoreBackend(Store *fs) : store(fs) {}
-  virtual ~FileStoreBackend() {}
-
-  static FileStoreBackend *create(long f_type, Store *fs);
-
-  virtual const char *get_name() = 0;
-  virtual int detect_features() = 0;
-  virtual int create_current() = 0;
-  virtual bool can_checkpoint() = 0;
-  virtual int list_checkpoints(list<string>& ls) = 0;
-  virtual int create_checkpoint(const string& name, uint64_t *cid) = 0;
-  virtual int sync_checkpoint(uint64_t id) = 0;
-  virtual int rollback_to(const string& name) = 0;
-  virtual int destroy_checkpoint(const string& name) = 0;
-  virtual int syncfs() = 0;
-  virtual bool has_fiemap() = 0;
-  virtual int do_fiemap(int fd, off_t start, size_t len, struct fiemap **pfiemap) = 0;
-  virtual int clone_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) = 0;
-  virtual int set_alloc_hint(int fd, uint64_t hint) = 0;
-
-  // hooks for (sloppy) crc tracking
-  virtual int _crc_update_write(int fd, loff_t off, size_t len, const bufferlist& bl) = 0;
-  virtual int _crc_update_truncate(int fd, loff_t off) = 0;
-  virtual int _crc_update_zero(int fd, loff_t off, size_t len) = 0;
-  virtual int _crc_update_clone_range(int srcfd, int destfd,
-				      loff_t srcoff, size_t len, loff_t dstoff) = 0;
-  virtual int _crc_verify_read(int fd, loff_t off, size_t len, const bufferlist& bl,
-			       ostream *out) = 0;
-};
+ostream& operator<<(ostream& out, const XStore::OpSequencer& s);
 
 #endif

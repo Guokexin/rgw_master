@@ -24,7 +24,10 @@ libos_la_SOURCES = \
 	os/ObjectStore.cc \
 	os/WBThrottle.cc \
         os/KeyValueDB.cc \
-	common/TrackedOp.cc
+	common/TrackedOp.cc \
+	os/xstore/XJournalingObjectStore.cc \
+	os/xstore/XJournal.cc \
+	os/xstore/XStore.cc
 
 if LINUX
 libos_la_SOURCES += os/BtrfsFileStoreBackend.cc
@@ -37,6 +40,13 @@ endif
 if WITH_LIBZFS
 libos_la_SOURCES += os/ZFSFileStoreBackend.cc
 endif
+
+#if WITH_MSCACHE
+libos_la_SOURCES += os/xstore/mscache/backend_aio.cpp
+libos_la_SOURCES += os/xstore/mscache/rcache.cpp
+libos_la_SOURCES += os/xstore/mscache/mscache_bm.cpp
+libos_la_SOURCES += os/xstore/mscache/mscache.cpp
+#endif
 
 libos_la_CXXFLAGS = ${AM_CXXFLAGS}
 libos_la_LIBADD = $(LIBOS_TYPES)
@@ -72,7 +82,10 @@ noinst_HEADERS += \
 	os/SequencerPosition.h \
 	os/WBThrottle.h \
 	os/XfsFileStoreBackend.h \
-	os/ZFSFileStoreBackend.h
+	os/ZFSFileStoreBackend.h \
+	os/xstore/XJournal.h \
+	os/xstore/XJournalingObjectStore.h \
+	os/xstore/XStore.h
 
 if WITH_SLIBROCKSDB
 libos_rocksdb_la_SOURCES = os/RocksDBStore.cc

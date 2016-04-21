@@ -78,6 +78,11 @@ ceph_test_filejournal_LDADD = $(LIBOS) $(UNITTEST_LDADD) $(CEPH_GLOBAL)
 ceph_test_filejournal_CXXFLAGS = $(UNITTEST_CXXFLAGS)
 bin_DEBUGPROGRAMS += ceph_test_filejournal
 
+ceph_test_xjournal_SOURCES = test/test_xjournal.cc
+ceph_test_xjournal_LDADD = $(LIBOS) $(UNITTEST_LDADD) $(CEPH_GLOBAL)
+ceph_test_xjournal_CXXFLAGS = $(UNITTEST_CXXFLAGS)
+bin_DEBUGPROGRAMS += ceph_test_xjournal
+
 ceph_test_object_map_SOURCES = \
 	test/ObjectMap/test_object_map.cc \
 	test/ObjectMap/KeyValueDBMemory.cc

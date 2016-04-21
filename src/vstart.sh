@@ -56,6 +56,7 @@ memstore=0
 journal=1
 
 MON_ADDR=""
+STORE_TYPE="filestore"
 
 conf_fn="$CEPH_DIR/ceph.conf"
 keyring_fn="$CEPH_DIR/keyring"
@@ -81,6 +82,7 @@ usage=$usage"\t--hitset <pool> <hit_set_type>: enable hitset tracking\n"
 usage=$usage"\t-e : create an erasure pool\n";
 usage=$usage"\t-o config\t\t add extra config parameters to all sections\n"
 usage=$usage"\t-J no journal\t\tdisable filestore journal\n"
+usage=$usage"\t-T store type\n"
 
 
 usage_exit() {
@@ -165,6 +167,10 @@ case $1 in
     -J )
 	    journal=0
 	    ;;
+    -T )
+	    STORE_TYPE=$2
+	    shift
+	    ;;
     -k )
 	    overwrite_conf=0
 	    ;;
@@ -245,7 +251,11 @@ else
         debug objecter = 20
         debug monc = 20
         debug journal = 20
+        debug xjournal = 20
         debug filestore = 20
+        lockdep = false
+        debug lockdep = 20
+        debug xstore = 20
         debug rgw = 20
         debug objclass = 20'
     CMDSDEBUG='
@@ -267,6 +277,9 @@ fi
 if [ "$memstore" -eq 1 ]; then
     COSDMEMSTORE='
 	osd objectstore = memstore'
+else
+    COSDXSTORE="
+	osd objectstore = "${STORE_TYPE}
 fi
 
 # lockdep everywhere?
@@ -412,6 +425,7 @@ $DAEMONOPTS
         filestore wbthrottle btrfs inodes hard limit = 30
 $COSDDEBUG
 $COSDMEMSTORE
+$COSDXSTORE
 $extra_conf
 [mon]
         mon pg warn min per osd = 3

@@ -4670,6 +4670,7 @@ void PG::start_flush(ObjectStore::Transaction *t,
 		     list<Context *> *on_safe)
 {
   // flush in progress ops
+  dout(20) << "start_flush txn " << t << dendl;
   FlushStateRef flush_trigger(
     new FlushState(this, get_osdmap()->get_epoch()));
   t->nop();

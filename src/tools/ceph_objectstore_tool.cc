@@ -762,6 +762,7 @@ int mark_pg_for_removal(ObjectStore *fs, spg_t pgid, ObjectStore::Transaction *t
     map<string,bufferlist> values;
     ::encode((char)1, values["_remove"]);
     t->omap_setkeys(coll, pgmeta_oid, values);
+
   }
   return 0;
 }
@@ -1002,6 +1003,10 @@ int export_files(ObjectStore *store, coll_t coll)
 	continue;
       }
       r = export_file(store, coll, *i);
+      if (r == -ENODATA &&
+          store->get_type() == "xstore") {
+        continue;
+      }
       if (r < 0)
         return r;
     }
@@ -2054,6 +2059,19 @@ int do_set_bytes(ObjectStore *store, coll_t coll, ghobject_t &ghobj, int fd)
     // XXX: Should we apply_transaction() every once in a while for very large files
   } while(true);
 
+  bufferptr bp;
+  bufferlist bl;
+  int r = store->getattr(coll, ghobj, OI_ATTR, bp);
+  if (r < 0) {
+    cerr << "getattr: " << cpp_strerror(-r) << std::endl;
+    return r;
+  }
+  bl.push_back(bp);
+  object_info_t oi(bl);
+  oi.size = offset;
+  bl.clear();
+  ::encode(oi, bl);
+  t->setattr(coll, ghobj, OI_ATTR, bl);
   store->apply_transaction(*t);
   return 0;
 }
@@ -2297,7 +2315,7 @@ int main(int argc, char **argv)
   desc.add_options()
     ("help", "produce help message")
     ("type", po::value<string>(&type),
-     "Arg is one of [filestore (default), memstore, keyvaluestore]")
+     "Arg is one of [filestore (default), xstore, memstore, keyvaluestore]")
     ("data-path", po::value<string>(&dpath),
      "path to object store, mandatory")
     ("journal-path", po::value<string>(&jpath),
@@ -2406,10 +2424,24 @@ int main(int argc, char **argv)
     cerr << "Must provide --data-path" << std::endl;
     usage(desc);
   }
+  global_init(
+    NULL, ceph_options, CEPH_ENTITY_TYPE_OSD,
+    CODE_ENVIRONMENT_UTILITY_NODOUT, 0);
+    //CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
+  common_init_finish(g_ceph_context);
+  g_conf = g_ceph_context->_conf;
   if (!vm.count("type")) {
-    type = "filestore";
+    if (g_conf->osd_objectstore == "xstore") {
+      type = "xstore";
+    } else {
+      type = "filestore";
+    }
   }
   if (type == "filestore" && !vm.count("journal-path")) {
+    cerr << "Must provide --journal-path" << std::endl;
+    usage(desc);
+  }
+  if (type == "xstore" && !vm.count("journal-path")) {
     cerr << "Must provide --journal-path" << std::endl;
     usage(desc);
   }
@@ -2471,12 +2503,6 @@ int main(int argc, char **argv)
   if (vm.count("skip-mount-omap"))
     flags |= SKIP_MOUNT_OMAP;
 
-  global_init(
-    NULL, ceph_options, CEPH_ENTITY_TYPE_OSD,
-    CODE_ENVIRONMENT_UTILITY_NODOUT, 0);
-    //CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
-  common_init_finish(g_ceph_context);
-  g_conf = g_ceph_context->_conf;
   if (debug) {
     g_conf->set_val_or_die("log_to_stderr", "true");
     g_conf->set_val_or_die("err_to_stderr", "true");
@@ -2490,7 +2516,7 @@ int main(int argc, char **argv)
      exit(1);
   }
   //Verify data data-path really is a filestore
-  if (type == "filestore") {
+  if (type == "filestore" || type == "xstore") {
     if (!S_ISDIR(st.st_mode)) {
       invalid_filestore_path(dpath);
     }
@@ -2519,7 +2545,7 @@ int main(int argc, char **argv)
 
   ObjectStore *fs = ObjectStore::create(g_ceph_context, type, dpath, jpath, flags);
   if (fs == NULL) {
-    cerr << "Must provide --type (filestore, memstore, keyvaluestore)" << std::endl;
+    cerr << "Must provide --type (filestore, xstore, memstore, keyvaluestore)" << std::endl;
     exit(1);
   }
 

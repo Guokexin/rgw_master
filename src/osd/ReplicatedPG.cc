@@ -5604,6 +5604,8 @@ void ReplicatedPG::write_update_size_and_usage(object_stat_sum_t& delta_stats, o
   if (length && (offset + length > oi.size)) {
     uint64_t new_size = offset + length;
     delta_stats.num_bytes += new_size - oi.size;
+    dout(20) << __func__ << " update " << oi << " size from " << oi.size
+             << " to " << new_size << dendl;
     oi.size = new_size;
   }
   delta_stats.num_wr++;
@@ -6165,8 +6167,9 @@ int ReplicatedPG::fill_in_copy_get(
         result = left;
 	cb->len = result;
       } else {
+        uint64_t max_read = MIN(left, oi.size - cursor.data_offset);
 	result = pgbackend->objects_read_sync(
-	  oi.soid, cursor.data_offset, left, osd_op.op.flags, &bl);
+	  oi.soid, cursor.data_offset, max_read, osd_op.op.flags, &bl);
 	if (result < 0)
 	  return result;
       }
@@ -10154,6 +10157,10 @@ void ReplicatedPG::scan_range(
       if (r == -ENOENT)
 	continue;
 
+      // If there is not oi for object, just skip it
+      if (r == -ENODATA)
+        continue;
+
       assert(r >= 0);
       object_info_t oi(bl);
       bi->objects[*p] = oi.version;
@@ -10196,7 +10203,13 @@ void ReplicatedPG::check_local()
       if (r != -ENOENT) {
 	derr << __func__ << " " << p->soid << " exists, but should have been "
 	     << "deleted" << dendl;
-	assert(0 == "erroneously present object");
+        bufferlist bv;
+        int r = pgbackend->objects_get_attr(p->soid, OI_ATTR, &bv);
+        if (r >= 0) {
+          object_info_t oi(bv);
+          dout(10) << __func__ << " oi " << oi << dendl;
+	  assert(0 == "erroneously present object");
+        }
       }
     } else {
       // ignore old(+missing) objects

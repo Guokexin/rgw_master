@@ -34,7 +34,7 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "zfsfilestorebackend(" << get_basedir_path() << ") "
 
-ZFSFileStoreBackend::ZFSFileStoreBackend(FileStore *fs) :
+ZFSFileStoreBackend::ZFSFileStoreBackend(Store *fs) :
   GenericFileStoreBackend(fs), base_zh(NULL), current_zh(NULL),
   m_filestore_zfs_snap(g_conf->filestore_zfs_snap)
 {
