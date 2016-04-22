@@ -228,11 +228,12 @@ bool OSDMonitor::check_ceph_serial_number() {
 	<< ", max osd " << osds << dendl;
   if (now_time >= expire_time) {
     dout(0) << __func__ << " reach or exceed expire time" << dendl;
-    if (osdmap.get_num_osds() > osds) {
-      dout(0) << __func__ << " osdmap's osds " << osdmap.get_num_osds()
-          << " > license quota osds " << osds << dendl;
-      return false;
-    }
+    return false;
+  }
+  if (osdmap.get_num_osds() > osds) {
+    dout(0) << __func__ << " osdmap's osds " << osdmap.get_num_osds()
+	<< " > license quota osds " << osds << dendl;
+    return false;
   }
   return true;
 }
