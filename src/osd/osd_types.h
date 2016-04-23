@@ -96,6 +96,24 @@ WRITE_EQ_OPERATORS_2(pg_shard_t, osd, shard)
 WRITE_CMP_OPERATORS_2(pg_shard_t, osd, shard)
 ostream &operator<<(ostream &lhs, const pg_shard_t &rhs);
 
+class IsPGRecoverablePredicate {
+public:
+  /**
+   * have encodes the shards available
+   */
+  virtual bool operator()(const set<pg_shard_t> &have) const = 0;
+  virtual ~IsPGRecoverablePredicate() {}
+};
+
+class IsPGReadablePredicate {
+public:
+  /**
+   * have encodes the shards available
+   */
+  virtual bool operator()(const set<pg_shard_t> &have) const = 0;
+  virtual ~IsPGReadablePredicate() {}
+};
+
 inline ostream& operator<<(ostream& out, const osd_reqid_t& r) {
   return out << r.name << "." << r.inc << ":" << r.tid;
 }
@@ -896,6 +914,9 @@ struct pg_pool_t {
       return FLAG_WRITE_FADVISE_DONTNEED;
     return 0;
   }
+
+  /// converts the acting/up vector to a set of pg shards
+  void convert_to_pg_shards(const vector<int> &from, set<pg_shard_t>* to) const;
 
   typedef enum {
     CACHEMODE_NONE = 0,                  ///< no caching
@@ -1903,6 +1924,8 @@ struct pg_interval_t {
     int new_up_primary,
     const vector<int> &old_up,
     const vector<int> &new_up,
+    int old_size,
+    int new_size,
     int old_min_size,
     int new_min_size,
     unsigned old_pg_num,
@@ -1945,6 +1968,7 @@ struct pg_interval_t {
     ceph::shared_ptr<const OSDMap> osdmap,  ///< [in] current map
     ceph::shared_ptr<const OSDMap> lastmap, ///< [in] last map
     pg_t pgid,                                  ///< [in] pgid for pg
+    IsPGRecoverablePredicate *could_have_gone_active, /// [in] predicate whether the pg can be active
     map<epoch_t, pg_interval_t> *past_intervals,///< [out] intervals
     ostream *out = 0                            ///< [out] debug ostream
     );
@@ -2640,9 +2664,15 @@ struct object_copy_data_t {
   ///< recent reqids on this object
   vector<pair<osd_reqid_t, version_t> > reqids;
 
+  uint64_t truncate_seq;
+  uint64_t truncate_size;
+
 public:
-  object_copy_data_t() : size((uint64_t)-1), data_digest(-1),
-			 omap_digest(-1), flags(0) {}
+  object_copy_data_t() :
+    size((uint64_t)-1), data_digest(-1),
+    omap_digest(-1), flags(0),
+    truncate_seq(0),
+    truncate_size(0) {}
 
   static void generate_test_instances(list<object_copy_data_t*>& o);
   void encode_classic(bufferlist& bl) const;

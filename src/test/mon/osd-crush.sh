@@ -78,6 +78,9 @@ function TEST_crush_rule_rm() {
 
 function TEST_crush_rule_create_erasure() {
     local dir=$1
+    # should have at least one OSD
+    run_osd $dir 0 || return 1
+
     local ruleset=ruleset3
     #
     # create a new ruleset with the default profile, implicitly
@@ -108,6 +111,15 @@ function TEST_crush_rule_create_erasure() {
     ./ceph osd erasure-code-profile ls | grep default || return 1
     ./ceph osd crush rule rm $ruleset || return 1
     ! ./ceph osd crush rule ls | grep $ruleset || return 1
+    #
+    # verify that if the crushmap contains a bugous ruleset,
+    # it will prevent the creation of a pool.
+    #
+    local crushtool_path_old=`ceph-conf --show-config-value crushtool`
+    ceph tell mon.* injectargs --crushtool "false"
+
+    expect_failure $dir "Error EINVAL" \
+        ./ceph osd pool create mypool 1 1 erasure || return 1
 }
 
 function check_ruleset_id_match_rule_id() {

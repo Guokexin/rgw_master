@@ -6041,8 +6041,12 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p)
     ++pd;
   }
 
-  string prev_name;
-  while (!pd.end()) {
+  string dn_name;
+  while (true) {
+    if (!dirp->inode->is_complete_and_ordered())
+      return -EAGAIN;
+    if (pd.end())
+      break;
     Dentry *dn = *pd;
     if (dn->inode == NULL) {
       ldout(cct, 15) << " skipping null '" << dn->name << "'" << dendl;
@@ -6065,6 +6069,8 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p)
     if (pd.end())
       next_off = dir_result_t::END;
 
+    dn_name = dn->name; // fill in name while we have lock
+
     client_lock.Unlock();
     int r = cb(p, &de, &st, stmask, next_off);  // _next_ offset
     client_lock.Lock();
@@ -6072,13 +6078,12 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p)
 	     << " = " << r
 	     << dendl;
     if (r < 0) {
-      dirp->next_offset = dn->offset;
-      dirp->at_cache_name = prev_name;
+      dirp->next_offset = next_off - 1;
       return r;
     }
 
-    prev_name = dn->name;
-    dirp->offset = next_off;
+    dirp->next_offset = dirp->offset = next_off;
+    dirp->at_cache_name = dn_name; // we successfully returned this one; update!
     if (r > 0)
       return r;
   }
@@ -7365,9 +7370,7 @@ int Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf)
 
     // async, caching, non-blocking.
     r = objectcacher->file_write(&in->oset, &in->layout, in->snaprealm->get_snap_context(),
-			         offset, size, bl, ceph_clock_now(cct), 0,
-			         client_lock);
-
+			         offset, size, bl, ceph_clock_now(cct), 0);
     put_cap_ref(in, CEPH_CAP_FILE_BUFFER);
 
     if (r < 0)
