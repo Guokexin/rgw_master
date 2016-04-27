@@ -636,45 +636,6 @@ TEST_F(TestImageWatcher, RequestLockIgnored) {
   ASSERT_TRUE(wait_for_aio_completions(*ictx));
 }
 
-TEST_F(TestImageWatcher, RequestLockIgnored) {
-  REQUIRE_FEATURE(RBD_FEATURE_EXCLUSIVE_LOCK);
-
-  librbd::ImageCtx *ictx;
-  ASSERT_EQ(0, open_image(m_image_name, &ictx));
-  ASSERT_EQ(0, register_image_watch(*ictx));
-  ASSERT_EQ(0, lock_image(*ictx, LOCK_EXCLUSIVE,
-			  "auto " + stringify(m_watch_ctx->get_handle())));
-
-  m_notify_acks = boost::assign::list_of(
-    std::make_pair(NOTIFY_OP_REQUEST_LOCK, create_response_message(0)));
-
-  int orig_notify_timeout = ictx->cct->_conf->client_notify_timeout;
-  ictx->cct->_conf->set_val("client_notify_timeout", "0");
-  BOOST_SCOPE_EXIT( (ictx)(orig_notify_timeout) ) {
-    ictx->cct->_conf->set_val("client_notify_timeout",
-                              stringify(orig_notify_timeout));
-  } BOOST_SCOPE_EXIT_END;
-
-  {
-    RWLock::WLocker l(ictx->owner_lock);
-    ictx->image_watcher->request_lock(
-      boost::bind(&TestImageWatcher::handle_restart_aio, this, ictx, _1),
-      create_aio_completion(*ictx));
-  }
-
-  ASSERT_TRUE(wait_for_notifies(*ictx));
-  NotifyOps expected_notify_ops;
-  expected_notify_ops += NOTIFY_OP_REQUEST_LOCK;
-  ASSERT_EQ(expected_notify_ops, m_notifies);
-
-  // after the request times out -- it will be resent
-  ASSERT_TRUE(wait_for_notifies(*ictx));
-  ASSERT_EQ(expected_notify_ops, m_notifies);
-
-  ASSERT_EQ(0, unlock_image());
-  ASSERT_TRUE(wait_for_aio_completions(*ictx));
-}
-
 TEST_F(TestImageWatcher, RequestLockTryLockRace) {
   REQUIRE_FEATURE(RBD_FEATURE_EXCLUSIVE_LOCK);
 
