@@ -1986,7 +1986,7 @@ int AsyncConnection::send_message(Message *m)
                               << f << " != " << get_features() << dendl;
   }
   if (!is_queued() && can_write == CANWRITE) {
-    if (!can_fast_prepare)
+    if (!bl.length())
       prepare_send_message(get_features(), m, bl);
     logger->inc(l_msgr_send_messages_inline);
     if (write_message(m, bl) < 0) {
