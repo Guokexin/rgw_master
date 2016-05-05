@@ -219,51 +219,24 @@ int XStore::lfn_truncate(coll_t cid, const ghobject_t& oid, off_t length)
 
 int XStore::lfn_stat(const coll_t& cid, const ghobject_t& oid, struct stat *buf)
 {
-  int r = 0;
-  {
-    IndexedPath path;
-    Index index;
-    r = get_index(cid, &index);
-    if (r < 0)
-      return r;
+  IndexedPath path;
+  Index index;
+  int r = get_index(cid, &index);
+  if (r < 0)
+    return r;
 
-    assert(NULL != index.index);
-    RWLock::RLocker l((index.index)->access_lock);
+  assert(NULL != index.index);
+  RWLock::RLocker l((index.index)->access_lock);
 
-    r = lfn_find(oid, index, &path);
-    if (r < 0)
-      return r;
-    r = ::stat(path->path(), buf);
-    if (r < 0) {
-      r = -errno;
-      return r;
-    }
+  r = lfn_find(oid, index, &path);
+  if (r < 0)
+    return r;
+  r = ::stat(path->path(), buf);
+  if (r < 0) {
+    r = -errno;
+    return r;
   }
 
-#if 0
-  /// FIXME, maybe we sould use meta info(object_info_t)
-  if (!cid.is_meta() &&
-      oid.hobj.oid.name.length()) {
-    bufferptr ptr;
-    int r2 = object_exist_in_meta(cid, oid, ptr);
-    if (r2 < 0) {
-      dout(5) << "lfn_stat " << cid << "/" << oid << " exist but meta not exist r=" << r2 << dendl;
-      return r2;
-    }
-    if (ptr.length() &&
-        oid.generation == ghobject_t::NO_GEN &&
-        oid.shard_id == shard_id_t::NO_SHARD) {
-      bufferlist bl;
-      bl.push_back(ptr);
-      object_info_t oi(bl);
-      if (oi.size != (uint64_t)buf->st_size) {
-        dout(5) << "lfn_stat " << cid << "/" << oid << " " << buf->st_size << "->" << oi.size << dendl;
-        buf->st_size = oi.size;
-        buf->st_blocks = (buf->st_size + buf->st_blksize - 1) / buf->st_blksize;
-      }
-    }
-  }
-#endif
   return r;
 }
 
@@ -3517,10 +3490,10 @@ int XStore::direct_write(
         if (m_enable_mscache_aio) {
           if (f_len || fd->has_truncate()) {
             fd->flush();
-            if (f_len) {
-              Mutex::Locker l(fd->lock);
-              fd->truncate.inc();
-            }
+          }
+          if (f_len) {
+            Mutex::Locker l(fd->lock);
+            fd->truncate.inc();
           }
         }
         // maybe async write
@@ -3535,11 +3508,6 @@ int XStore::direct_write(
           op->aio.inc();
           Mutex::Locker fl(fd->lock);
           fd->aio.inc();
-        } else if (f_len) {
-          // FIXME
-          struct stat st;
-          ::fstat(**fd, &st);
-          assert(f_len == f_len);
         }
       } else {
         got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
@@ -3557,12 +3525,6 @@ int XStore::direct_write(
           NULL, MSCACHE_WRITE_API_SYNC,
           (f_len? MSCACHE_WRITE_HINT_TRUNCATE : 0),
           f_len);
-        if (f_len) {
-          // FIXME
-          struct stat st;
-          ::fstat(**fd, &st);
-          assert(f_len == st.st_size);
-        }
       } else {
         got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
         truncate_and_check(fd, f_len);
@@ -3629,7 +3591,7 @@ int XStore::truncate_and_check(
       assert(0 == "Unexpected Error");
     }
     dout(15) << "XStore::ftruncate(" << **fd << ") to " << length << " r=" << r << dendl;
-#if 1
+#if 0
     struct stat st;
     r = ::fstat(**fd, &st);
     assert(length == st.st_size);
@@ -3668,12 +3630,6 @@ int XStore::read(
     len = st.st_size;
   }
 
-#ifdef HAVE_POSIX_FADVISE
-  if (op_flags & CEPH_OSD_OP_FLAG_FADVISE_RANDOM)
-    posix_fadvise(**fd, offset, len, POSIX_FADV_RANDOM);
-  if (op_flags & CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL)
-    posix_fadvise(**fd, offset, len, POSIX_FADV_SEQUENTIAL);
-#endif
   bufferptr ptr;
   got = direct_read(fd, oid, ptr, offset, len, op_flags);
   if (got < 0) {
@@ -3683,13 +3639,6 @@ int XStore::read(
     return got;
   }
   bl.push_back(ptr);
-
-#ifdef HAVE_POSIX_FADVISE
-  if (op_flags & CEPH_OSD_OP_FLAG_FADVISE_DONTNEED)
-    posix_fadvise(**fd, offset, len, POSIX_FADV_DONTNEED);
-  if (op_flags & (CEPH_OSD_OP_FLAG_FADVISE_RANDOM | CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL))
-    posix_fadvise(**fd, offset, len, POSIX_FADV_NORMAL);
-#endif
 
   if (m_filestore_sloppy_crc && (!replaying || backend->can_checkpoint())) {
     ostringstream ss;
