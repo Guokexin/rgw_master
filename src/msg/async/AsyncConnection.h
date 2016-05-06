@@ -246,7 +246,6 @@ class AsyncConnection : public Connection {
   bool open_write;
   map<int, list<pair<bufferlist, Message*> > > out_q;  // priority queue for outbound msgs
   list<Message*> sent; // the first bufferlist need to inject seq
-  list<Message*> local_messages;    // local deliver
   bufferlist outcoming_bl;
   bool keepalive;
 
@@ -257,7 +256,6 @@ class AsyncConnection : public Connection {
   EventCallbackRef reset_handler;
   EventCallbackRef remote_reset_handler;
   EventCallbackRef connect_handler;
-  EventCallbackRef local_deliver_handler;
   EventCallbackRef wakeup_handler;
   struct iovec msgvec[ASYNC_IOV_MAX];
   char *recv_buf;
@@ -326,7 +324,6 @@ class AsyncConnection : public Connection {
     delete reset_handler;
     delete remote_reset_handler;
     delete connect_handler;
-    delete local_deliver_handler;
     delete wakeup_handler;
   }
   PerfCounters *get_perf_counter() {
