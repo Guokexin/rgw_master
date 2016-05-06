@@ -948,7 +948,8 @@ public:
   void trim_write_ahead();
 
   map<pg_shard_t, pg_info_t>::const_iterator find_best_info(
-    const map<pg_shard_t, pg_info_t> &infos) const;
+    const map<pg_shard_t, pg_info_t> &infos,
+    bool *history_les_bound) const;
   static void calc_ec_acting(
     map<pg_shard_t, pg_info_t>::const_iterator auth_log_shard,
     unsigned size,
@@ -977,7 +978,8 @@ public:
     set<pg_shard_t> *acting_backfill,
     pg_shard_t *want_primary,
     ostream &ss);
-  bool choose_acting(pg_shard_t &auth_log_shard);
+  bool choose_acting(pg_shard_t &auth_log_shard,
+		     bool *history_les_bound);
   void build_might_have_unfound();
   void replay_queued_ops();
   void activate(
@@ -1646,8 +1648,9 @@ public:
 
     struct Peering : boost::statechart::state< Peering, Primary, GetInfo >, NamedState {
       std::auto_ptr< PriorSet > prior_set;
+      bool history_les_bound;  //< need osd_find_best_info_ignore_history_les
 
-      Peering(my_context ctx);
+      explicit Peering(my_context ctx);
       void exit();
 
       typedef boost::mpl::list <
