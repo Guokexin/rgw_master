@@ -199,6 +199,7 @@ class DispatchQueue {
   void entry();
   void wait();
   void shutdown();
+  void discard_local();
   bool is_started() const {return dispatch_thread.is_started();}
 
   DispatchQueue(CephContext *cct, Messenger *msgr)
