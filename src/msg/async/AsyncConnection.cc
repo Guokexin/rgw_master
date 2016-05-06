@@ -105,7 +105,7 @@ static void alloc_aligned_buffer(bufferlist& data, unsigned len, unsigned off)
   }
 }
 
-AsyncConnection::AsyncConnection(CephContext *cct, AsyncMessenger *m, DispatchQueue *q,, EventCenter *c, PerfCounters *p)
+AsyncConnection::AsyncConnection(CephContext *cct, AsyncMessenger *m, DispatchQueue *q, EventCenter *c, PerfCounters *p)
   : Connection(cct, m), async_msgr(m), conn_id(q->get_id()), logger(p), global_seq(0), connect_seq(0), peer_global_seq(0),
     out_seq(0), ack_left(0), in_seq(0), state(STATE_NONE), state_after_send(0), sd(-1), port(-1), dispatch_queue(q),
     write_lock("AsyncConnection::write_lock"), can_write(NOWRITE),
@@ -626,14 +626,14 @@ void AsyncConnection::process()
 
       case STATE_OPEN_MESSAGE_THROTTLE_BYTES:
         {
-          uint64_t message_size = current_header.front_len + current_header.middle_len + current_header.data_len;
-          if (message_size) {
+          cur_msg_size = current_header.front_len + current_header.middle_len + current_header.data_len;
+          if (cur_msg_size) {
             if (policy.throttler_bytes) {
-              ldout(async_msgr->cct, 10) << __func__ << " wants " << message_size << " bytes from policy throttler "
+              ldout(async_msgr->cct, 10) << __func__ << " wants " << cur_msg_size << " bytes from policy throttler "
                                          << policy.throttler_bytes->get_current() << "/"
                                          << policy.throttler_bytes->get_max() << dendl;
-              if (!policy.throttler_bytes->get_or_fail(message_size)) {
-                ldout(async_msgr->cct, 10) << __func__ << " wants " << message_size << " bytes from policy throttler "
+              if (!policy.throttler_bytes->get_or_fail(cur_msg_size)) {
+                ldout(async_msgr->cct, 10) << __func__ << " wants " << cur_msg_size << " bytes from policy throttler "
                                            << policy.throttler_bytes->get_current() << "/"
                                            << policy.throttler_bytes->get_max() << " failed, just wait." << dendl;
                 // following thread pool deal with th full message queue isn't a
@@ -642,6 +642,25 @@ void AsyncConnection::process()
                   register_time_events.insert(center->create_time_event(1000, wakeup_handler));
                 break;
               }
+            }
+          }
+
+          state = STATE_OPEN_MESSAGE_THROTTLE_DISPATCH_QUEUE;
+          break;
+        }
+
+      case STATE_OPEN_MESSAGE_THROTTLE_DISPATCH_QUEUE:
+        {
+          if (cur_msg_size) {
+            if (!dispatch_queue->dispatch_throttler.get_or_fail(cur_msg_size)) {
+              ldout(async_msgr->cct, 10) << __func__ << " wants " << cur_msg_size << " bytes from dispatch throttle "
+                                         << dispatch_queue->dispatch_throttler.get_current() << "/"
+                                         << dispatch_queue->dispatch_throttler.get_max() << " failed, just wait." << dendl;
+              // following thread pool deal with th full message queue isn't a
+              // short time, so we can wait a ms.
+              if (register_time_events.empty())
+                register_time_events.insert(center->create_time_event(1000, wakeup_handler));
+              break;
             }
           }
 
@@ -810,8 +829,7 @@ void AsyncConnection::process()
 
           // store reservation size in message, so we don't get confused
           // by messages entering the dispatch queue through other paths.
-          uint64_t message_size = current_header.front_len + current_header.middle_len + current_header.data_len;
-          message->set_dispatch_throttle_size(message_size);
+          message->set_dispatch_throttle_size(cur_msg_size);
 
           message->set_recv_stamp(recv_stamp);
           message->set_throttle_stamp(throttle_stamp);
@@ -856,6 +874,9 @@ void AsyncConnection::process()
 
           state = STATE_OPEN;
 
+          logger->inc(l_msgr_recv_messages);
+          logger->inc(l_msgr_recv_bytes, cur_msg_size + sizeof(ceph_msg_header) + sizeof(ceph_msg_footer));
+
           async_msgr->ms_fast_preprocess(message);
           if (async_msgr->ms_can_fast_dispatch(message)) {
             lock.Unlock();
@@ -864,8 +885,6 @@ void AsyncConnection::process()
           } else {
             dispatch_queue->enqueue(message, message->get_priority(), conn_id);
           }
-          logger->inc(l_msgr_recv_messages);
-          logger->inc(l_msgr_recv_bytes, message_size + sizeof(ceph_msg_header) + sizeof(ceph_msg_footer));
 
           break;
         }
@@ -927,16 +946,16 @@ void AsyncConnection::process()
                         << policy.throttler_messages->get_max() << dendl;
     policy.throttler_messages->put();
   }
-  if (state > STATE_OPEN_MESSAGE_THROTTLE_BYTES &&
+  if (state > STATE_OPEN_MESSAGE_THROTTLE_DISPATCH_QUEUE &&
       state <= STATE_OPEN_MESSAGE_READ_FOOTER_AND_DISPATCH) {
-    uint64_t message_size = current_header.front_len + current_header.middle_len + current_header.data_len;
     if (policy.throttler_bytes) {
-      ldout(async_msgr->cct,10) << __func__ << " releasing " << message_size
+      ldout(async_msgr->cct,10) << __func__ << " releasing " << cur_msg_size
                           << " bytes to policy throttler "
                           << policy.throttler_bytes->get_current() << "/"
                           << policy.throttler_bytes->get_max() << dendl;
-      policy.throttler_bytes->put(message_size);
+      policy.throttler_bytes->put(cur_msg_size);
     }
+    dispatch_queue->dispatch_throttle_release(cur_msg_size);
   }
   fault();
 }
