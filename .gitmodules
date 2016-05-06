@@ -24,4 +24,4 @@
 	url = https://github.com/ceph/ceph-erasure-code-corpus.git
 [submodule "src/os/xstore/mscache"]
 	path = src/os/xstore/mscache
-	url = git@github.xsky.com:EntFeatures/mscache.git
+	url = git@github.xsky.com:ceph/mscache.git
