@@ -1850,6 +1850,19 @@ protected:
   void queue_want_up_thru(epoch_t want);
   void send_alive();
 
+  // -- full map requests --
+  epoch_t requested_full_first, requested_full_last;
+
+  void request_full_map(epoch_t first, epoch_t last);
+  void rerequest_full_maps() {
+    epoch_t first = requested_full_first;
+    epoch_t last = requested_full_last;
+    requested_full_first = 0;
+    requested_full_last = 0;
+    request_full_map(first, last);
+  }
+  void got_full_map(epoch_t e);
+
   // -- failures --
   map<int,utime_t> failure_queue;
   map<int,entity_inst_t> failure_pending;

@@ -4319,6 +4319,11 @@ void OSD::ms_handle_connect(Connection *con)
       monc->sub_want("osdmap", osdmap->get_epoch(), CEPH_SUBSCRIBE_ONETIME);
       monc->renew_subs();
     }
+
+    // full map requests may happen while active or pre-boot
+    if (requested_full_first) {
+      rerequest_full_maps();
+    }
   }
 }
 
@@ -4678,6 +4683,65 @@ void OSD::send_alive()
     up_thru_pending = up_thru_wanted;
     dout(10) << "send_alive want " << up_thru_wanted << dendl;
     monc->send_mon_message(new MOSDAlive(osdmap->get_epoch(), up_thru_wanted));
+  }
+}
+
+void OSD::request_full_map(epoch_t first, epoch_t last)
+{
+  dout(10) << __func__ << " " << first << ".." << last
+           << ", previously requested "
+           << requested_full_first << ".." << requested_full_last << dendl;
+  assert(osd_lock.is_locked());
+  assert(first > 0 && last > 0);
+  assert(first <= last);
+  assert(first >= requested_full_first);  // we shouldn't ever ask for older maps
+  if (requested_full_first == 0) {
+    // first request
+    requested_full_first = first;
+    requested_full_last = last;
+  } else if (last <= requested_full_last) {
+    // dup
+    return;
+  } else {
+    // additional request
+    first = requested_full_last + 1;
+    requested_full_last = last;
+  }
+  MMonGetOSDMap *req = new MMonGetOSDMap;
+  req->request_full(first, last);
+  monc->send_mon_message(req);
+}
+
+void OSD::got_full_map(epoch_t e)
+{
+  assert(requested_full_first <= requested_full_last);
+  assert(osd_lock.is_locked());
+  if (requested_full_first == 0) {
+    dout(20) << __func__ << " " << e << ", nothing requested" << dendl;
+    return;
+  }
+  if (e < requested_full_first) {
+    dout(10) << __func__ << " " << e << ", requested " << requested_full_first
+             << ".." << requested_full_last
+             << ", ignoring" << dendl;
+    return;
+  }
+  if (e > requested_full_first) {
+    dout(10) << __func__ << " " << e << ", requested " << requested_full_first
+             << ".." << requested_full_last << ", resetting" << dendl;
+    requested_full_first = requested_full_last = 0;
+    return;
+  }
+  if (requested_full_first == requested_full_last) {
+    dout(10) << __func__ << " " << e << ", requested " << requested_full_first
+             << ".." << requested_full_last
+             << ", now done" << dendl;
+    requested_full_first = requested_full_last = 0;
+  } else {
+    dout(10) << __func__ << " " << e << ", requested " << requested_full_first
+             << ".." << requested_full_last
+             << ", still need more" << dendl;
+    ++requested_full_first;
   }
 }
 
@@ -6298,6 +6362,12 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   // even if this map isn't from a mon, we may have satisfied our subscription
   monc->sub_got("osdmap", last);
+
+  if (!m->maps.empty() && requested_full_first) {
+    dout(10) << __func__ << " still missing full maps " << requested_full_first
+	     << ".." << requested_full_last << dendl;
+    rerequest_full_maps();
+  }
 
   if (last <= superblock.newest_map) {
     dout(10) << " no new maps here, dropping" << dendl;
