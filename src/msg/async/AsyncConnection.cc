@@ -880,7 +880,7 @@ void AsyncConnection::process()
           async_msgr->ms_fast_preprocess(message);
           if (async_msgr->ms_can_fast_dispatch(message)) {
             lock.Unlock();
-            async_msgr->ms_fast_dispatch(message);
+            dispatch_queue->fast_dispatch(message);
             lock.Lock();
           } else {
             dispatch_queue->enqueue(message, message->get_priority(), conn_id);
