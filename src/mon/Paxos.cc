@@ -943,6 +943,7 @@ void Paxos::extend_lease()
   //assert(is_active());
 
   lease_expire = ceph_clock_now(g_ceph_context);
+  utime_t lease_expire_mono = ceph_mono_clock_now(g_ceph_context);
   lease_expire += g_conf->mon_lease;
   acked_lease.clear();
   acked_lease.insert(mon->rank);
@@ -973,8 +974,7 @@ void Paxos::extend_lease()
 
   // set renew event
   lease_renew_event = new C_LeaseRenew(this);
-  utime_t at = lease_expire;
-  at -= g_conf->mon_lease;
+  utime_t at = lease_expire_mono;
   at += g_conf->mon_lease_renew_interval;
   mon->timer.add_event_at(at, lease_renew_event);
 }

@@ -30,15 +30,29 @@ class Cond {
   pthread_cond_t _c;
 
   Mutex *waiter_mutex;
+  bool mono_clock; // monotonic clock or real clock?
 
   // don't allow copying.
   void operator=(Cond &C);
   Cond(const Cond &C);
 
  public:
-  Cond() : waiter_mutex(NULL) {
-    int r = pthread_cond_init(&_c,NULL);
-    assert(r == 0);
+  Cond(bool mono_time = false) : waiter_mutex(NULL) {
+    if (mono_time) {
+      // use monotonic time in the conditon variable
+      pthread_condattr_t attr;
+      int r = pthread_condattr_init(&attr);
+      assert(r == 0);
+      r = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+      assert(r == 0);
+      r = pthread_cond_init(&_c, &attr);
+      assert(r == 0);
+      mono_clock = true;
+    } else {
+      int r = pthread_cond_init(&_c,NULL);
+      assert(r == 0);
+      mono_clock = false;
+    }
   }
   virtual ~Cond() { 
     pthread_cond_destroy(&_c); 
@@ -57,7 +71,8 @@ class Cond {
     return r;
   }
 
-  int WaitUntil(Mutex &mutex, utime_t when) {
+  int WaitUntil(Mutex &mutex, utime_t when, bool mclock = false) {
+    assert(mclock == mono_clock);
     // make sure this cond is used with one mutex only
     assert(waiter_mutex == NULL || waiter_mutex == &mutex);
     waiter_mutex = &mutex;
@@ -74,9 +89,14 @@ class Cond {
     return r;
   }
   int WaitInterval(CephContext *cct, Mutex &mutex, utime_t interval) {
-    utime_t when = ceph_clock_now(cct);
+    utime_t when;
+    if (mono_clock) {
+      when = ceph_mono_clock_now(cct);
+    } else {
+      when = ceph_clock_now(cct);
+    }
     when += interval;
-    return WaitUntil(mutex, when);
+    return WaitUntil(mutex, when, mono_clock);
   }
 
   int SloppySignal() { 

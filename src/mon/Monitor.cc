@@ -2103,7 +2103,7 @@ void Monitor::health_tick_stop()
 
 utime_t Monitor::health_interval_calc_next_update()
 {
-  utime_t now = ceph_clock_now(cct);
+  utime_t now = ceph_mono_clock_now(cct);
 
   time_t secs = now.sec();
   int remainder = secs % cct->_conf->mon_health_to_clog_interval;
