@@ -92,21 +92,20 @@ void SafeTimer::timer_thread()
     utime_t now = ceph_clock_now(cct);
     if (now < last) {
       last = now;
-      ldout(cct,0) << "fire all events" << dendl;
-      while (!schedule.empty()) {
-        scheduled_map_t::iterator p = schedule.begin();
+      vector<Context *> callbacks;
+      for (scheduled_map_t::iterator p = schedule.begin();
+	   p != schedule.end(); ++p)
+        callbacks.push_back(p->second);
+      events.clear();
+      schedule.clear();
 
-        Context *callback = p->second;
-        events.erase(callback);
-        schedule.erase(p);
-        ldout(cct,10) << "timer_thread executing " << callback << dendl;
-
-        if (!safe_callbacks)
-          lock.Unlock();
-        callback->complete(0);
-        if (!safe_callbacks)
-          lock.Lock();
-      }
+      if (!safe_callbacks)
+	lock.Unlock();
+      for (vector<Context *>::iterator it = callbacks.begin();
+	   it != callbacks.end(); ++it)
+	(*it)->complete(0);
+      if (!safe_callbacks)
+	lock.Lock();
       now = ceph_clock_now(cct); // recalc now
     } else {
       last = now;
