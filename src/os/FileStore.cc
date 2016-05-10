@@ -78,7 +78,11 @@ using ceph::crypto::SHA1;
 #include "common/config.h"
 
 #ifdef WITH_LTTNG
+#define TRACEPOINT_DEFINE
+#define TRACEPOINT_PROBE_DYNAMIC_LINKAGE
 #include "tracing/objectstore.h"
+#undef TRACEPOINT_PROBE_DYNAMIC_LINKAGE
+#undef TRACEPOINT_DEFINE
 #else
 #define tracepoint(...)
 #endif
@@ -3893,6 +3897,7 @@ int FileStore::_fgetattrs(int fd, map<string, pair<bufferptr, int> >& aset)
     dout(10) << " -ERANGE, got " << len << dendl;
     if (len < 0) {
       assert(!m_filestore_fail_eio || len != -EIO);
+      delete[] names2;
       return len;
     }
     name = names2;
@@ -3911,8 +3916,10 @@ int FileStore::_fgetattrs(int fd, map<string, pair<bufferptr, int> >& aset)
       if (*name) {
         dout(20) << "fgetattrs " << fd << " getting '" << name << "'" << dendl;
         int r = _fgetattr(fd, attrname, aset[name].first, &aset[name].second);
-        if (r < 0)
+        if (r < 0) {
+	  delete[] names2;
 	  return r;
+        }
       }
     }
     name += strlen(name) + 1;

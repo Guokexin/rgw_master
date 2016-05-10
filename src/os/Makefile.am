@@ -50,9 +50,6 @@ libos_la_SOURCES += os/xstore/mscache/mscache.cpp
 
 libos_la_CXXFLAGS = ${AM_CXXFLAGS}
 libos_la_LIBADD = $(LIBOS_TYPES)
-if WITH_LTTNG
-libos_la_LIBADD += $(LIBOS_TP)
-endif
 
 noinst_LTLIBRARIES += libos.la
 
