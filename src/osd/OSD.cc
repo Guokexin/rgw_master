@@ -3960,14 +3960,14 @@ void OSD::tick()
     heartbeat_lock.Unlock();
 
     // mon report?
-    utime_t now = ceph_clock_now(cct);
+    utime_t now = ceph_mono_clock_now(cct);
     if (outstanding_pg_stats && timeout_mon_on_pg_stats &&
 	(now - cct->_conf->osd_mon_ack_timeout) > last_pg_stats_ack) {
       dout(1) << "mon hasn't acked PGStats in " << now - last_pg_stats_ack
 	      << " seconds, reconnecting elsewhere" << dendl;
       monc->reopen_session(new C_MonStatsAckTimer(this));
       timeout_mon_on_pg_stats = false;
-      last_pg_stats_ack = ceph_clock_now(cct);  // reset clock
+      last_pg_stats_ack = ceph_mono_clock_now(cct);  // reset clock
       last_pg_stats_sent = utime_t();
     }
     if (now - last_pg_stats_sent > cct->_conf->osd_mon_report_interval_max) {
@@ -4291,7 +4291,7 @@ void OSD::do_mon_report()
   dout(7) << "do_mon_report" << dendl;
 
   utime_t now(ceph_clock_now(cct));
-  last_mon_report = now;
+  last_mon_report = ceph_mono_clock_now(cct);
 
   // do any pending reports
   send_alive();
@@ -4663,7 +4663,7 @@ void OSD::queue_want_up_thru(epoch_t want)
     up_thru_wanted = want;
 
     // expedite, a bit.  WARNING this will somewhat delay other mon queries.
-    last_mon_report = ceph_clock_now(cct);
+    last_mon_report = ceph_mono_clock_now(cct);
     send_alive();
   } else {
     dout(10) << "queue_want_up_thru want " << want << " <= queued " << up_thru_wanted 
@@ -4785,7 +4785,7 @@ void OSD::send_pg_stats(const utime_t &now)
   pg_stat_queue_lock.Lock();
 
   if (osd_stat_updated || !pg_stat_queue.empty()) {
-    last_pg_stats_sent = now;
+    last_pg_stats_sent = ceph_mono_clock_now(cct);
     osd_stat_updated = false;
 
     dout(10) << "send_pg_stats - " << pg_stat_queue.size() << " pgs updated" << dendl;
@@ -4820,7 +4820,7 @@ void OSD::send_pg_stats(const utime_t &now)
 
     if (!outstanding_pg_stats) {
       outstanding_pg_stats = true;
-      last_pg_stats_ack = ceph_clock_now(cct);
+      last_pg_stats_ack = ceph_mono_clock_now(cct);
     }
     monc->send_mon_message(m);
   }
@@ -4837,7 +4837,7 @@ void OSD::handle_pg_stats_ack(MPGStatsAck *ack)
     return;
   }
 
-  last_pg_stats_ack = ceph_clock_now(cct);
+  last_pg_stats_ack = ceph_mono_clock_now(cct);
 
   pg_stat_queue_lock.Lock();
 
