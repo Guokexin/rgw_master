@@ -1834,7 +1834,15 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   dout(5) << "_do_op " << *o << " start" << dendl;
   int r = 0;
   if (o->state == Op::STATE_ACK || !(o->wal)) {
-    r = _do_transactions(o->tls, o->op, o, &handle);
+    if (o->state != Op::STATE_ACK) {
+      r = _do_data_txn(o, &handle);
+    } else {
+      if (o->wal) {
+        r = _do_transactions(o->tls, o->op, o, &handle);
+      } else {
+        r = _do_meta_txn(o, &handle);
+      }
+    }
     dout(10) << "_do_op " << o << " seq " << o->op << " r = " << r
       	     << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
   } else {
@@ -1844,6 +1852,92 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   if (o->state == Op::STATE_ACK) {
     apply_manager.op_apply_finish(o->op);
   }
+}
+
+
+unsigned XStore::_do_data_txn(Op *ops, ThreadPool::TPHandle *handle)
+{
+  int r = 0;
+  DataOps *data_ops = ops->data_ops;
+  for (uint32_t i = 0; i< data_ops->op_num; i++) {
+    if (handle)
+      handle->reset_tp_timeout();
+    _inject_failure();
+
+    Transaction::Op *op = &(data_ops->ops[i]);
+    switch(op->op) {
+    case Transaction::OP_SETALLOCHINT:
+      {
+        coll_t &cid = data_ops->alloc_cid;
+        ghobject_t &oid = data_ops->alloc_obj;
+        uint64_t expected_object_size = op->expected_object_size;
+        uint64_t expected_write_size = op->expected_write_size;
+        tracepoint(objectstore, setallochint_enter, osr_name);
+        r = _set_alloc_hint(cid, oid, expected_object_size, expected_write_size);
+        tracepoint(objectstore, setallochint_exit, r);
+      }
+      break;
+    case Transaction::OP_WRITE:
+      {
+        coll_t &cid = data_ops->write_cid;
+        ghobject_t &oid = data_ops->write_obj;
+        uint32_t fadvise_flags = data_ops->fadvise_flags;
+        uint64_t off = op->off;
+        uint64_t len = op->len;
+        bufferlist &bl = data_ops->write_bl;
+        r = _write(cid, oid, off, len, bl, fadvise_flags, ops->osr->id, ops, ops->osr);
+      }
+      break;
+    default:
+      derr << "bad op " << op->op << dendl;
+      assert(0);
+    }
+    if (r < 0)
+      _do_txn_error_proc(r, op, ops);
+  }
+  return 0;
+}
+
+unsigned XStore::_do_meta_txn(Op *ops, ThreadPool::TPHandle *handle)
+{
+  int r = 0;
+  MetaOps *meta_ops = ops->meta_ops;
+  for (uint32_t i = 0; i< meta_ops->op_num; i++) {
+    if (handle)
+      handle->reset_tp_timeout();
+    _inject_failure();
+
+    Transaction::Op *op = &(meta_ops->ops[i]);
+    switch(op->op) {
+    case Transaction::OP_SETATTRS:
+      {
+        coll_t &cid = meta_ops->setattrs_cid;
+        ghobject_t &oid = meta_ops->setattrs_obj;
+        r = _setattrs(cid, oid, *(meta_ops->attrs), meta_ops->setattrs_pos);
+      }
+      break;
+    case Transaction::OP_OMAP_RMKEYS:
+      {
+        coll_t &cid = meta_ops->rmkeys_cid;
+        ghobject_t &oid = meta_ops->rmkeys_obj;
+        r = _omap_rmkeys(cid, oid, *(meta_ops->rmkeys), meta_ops->rmkeys_pos);
+      }
+      break;
+    case Transaction::OP_OMAP_SETKEYS:
+      {
+        coll_t &cid = meta_ops->setkeys_cid;
+        ghobject_t &oid = meta_ops->setkeys_obj;
+        r = _omap_setkeys(cid, oid, *(meta_ops->setkeys), meta_ops->setkeys_pos);
+      }
+      break;
+    default:
+      derr << "bad op " << op->op << dendl;
+      assert(0);
+    }
+    if (r < 0)
+      _do_txn_error_proc(r, op, ops);
+  }
+  return 0;
 }
 
 void XStore::aio_callback(AioArgs *args)
@@ -2062,190 +2156,114 @@ void XStore::_jwa_entry()
   dout(10) << __func__ << " end" << dendl;
 }
 
-bool XStore::get_replay_txns(list<Transaction*>& tls,
-  list<Transaction*>* jtls)
+// wal when return true
+bool XStore::split_txns(Op *op, list<Transaction*>* jtls)
 {
-  bool should_wal = _should_wal(tls);
+  bool should_wal = init_judge_wal(op->tls);
   if (should_wal) {
     return true;
   }
 
-  Transaction* jtran = new Transaction();
+  list<Transaction*> &tls = op->tls;
+  Transaction* jtxn = new Transaction();
+  DataOps *data_ops = new DataOps();
+  MetaOps *meta_ops = new MetaOps();
+
+  uint32_t trans_num = 0;
   for (list<Transaction*>::iterator p = tls.begin();
-      p != tls.end(); ++p) {
+      p != tls.end(); ++p, trans_num++) {
+    SequencerPosition pos(0, trans_num, 0);
     Transaction::iterator i = (*p)->begin();
     while (i.have_op()) {
       Transaction::Op *op = i.decode_op();
 
       switch (op->op) {
+      // Data Ops
       case Transaction::OP_NOP:
+        assert(meta_ops->op_num == 0);
         break;
-      case Transaction::OP_TOUCH:
-        break;
-        
-      case Transaction::OP_WRITE:
-        {
-          const coll_t& cid = i.get_cid(op->cid);
-          if (cid.is_meta()) {
-            delete jtran;
-            return true;
-          }
-          bufferlist bl;
-          i.decode_bl(bl);
-        }
-        break;
-        
-      case Transaction::OP_ZERO:
-        break;
-        
-      case Transaction::OP_TRIMCACHE:
-        break;
-        
-      case Transaction::OP_TRUNCATE:
-        break;
-        
-      case Transaction::OP_REMOVE:
-        break;
-        
-      case Transaction::OP_SETATTR:
-        {
-          const coll_t& cid = i.get_cid(op->cid);
-          const ghobject_t& oid = i.get_oid(op->oid);
-          string name = i.decode_string();
-          bufferlist bl;
-          i.decode_bl(bl);
-          jtran->setattr(cid, oid, name, bl);
-        }
-        break;
-        
-      case Transaction::OP_SETATTRS:
-        {
-          const coll_t& cid = i.get_cid(op->cid);
-          const ghobject_t& oid = i.get_oid(op->oid);
-          map<string, bufferptr> aset;
-          i.decode_attrset(aset);
-          jtran->setattrs(cid, oid, aset);
-        }
-        break;
-
-      case Transaction::OP_RMATTR:
-        {
-          i.decode_string();
-        }
-        break;
-
-      case Transaction::OP_RMATTRS:
-        break;
-        
-      case Transaction::OP_CLONE:
-        break;
-
-      case Transaction::OP_CLONERANGE:
-        break;
-
-      case Transaction::OP_CLONERANGE2:
-        break;
-
-      case Transaction::OP_MKCOLL:
-        break;
-
-      case Transaction::OP_COLL_HINT:
-        {
-          bufferlist hint;
-          i.decode_bl(hint);
-        }
-        break;
-
-      case Transaction::OP_RMCOLL:
-        break;
-
-      case Transaction::OP_COLL_ADD:
-        {
-          coll_t ocid = i.get_cid(op->cid);
-          coll_t ncid = i.get_cid(op->dest_cid);
-          ghobject_t oid = i.get_oid(op->oid);
-
-          // always followed by OP_COLL_REMOVE
-          Transaction::Op *op2 = i.decode_op();
-          coll_t ocid2 = i.get_cid(op2->cid);
-          ghobject_t oid2 = i.get_oid(op2->oid);
-          assert(op2->op == Transaction::OP_COLL_REMOVE);
-          assert(ocid2 == ocid);
-          assert(oid2 == oid);
-
-        }
-        break;
-
-      case Transaction::OP_COLL_MOVE:
-        break;
-
-      case Transaction::OP_COLL_MOVE_RENAME:
-        break;
-
-      case Transaction::OP_COLL_SETATTR:
-        {
-          i.decode_string();
-          bufferlist bl;
-          i.decode_bl(bl);
-        }
-        break;
-
-      case Transaction::OP_COLL_RMATTR:
-        {
-          i.decode_string();
-        }
-        break;
-
-      case Transaction::OP_STARTSYNC:
-        break;
-
-      case Transaction::OP_COLL_RENAME:
-        break;
-
-      case Transaction::OP_OMAP_CLEAR:
-        break;
-      case Transaction::OP_OMAP_SETKEYS:
-        {
-          const coll_t& cid = i.get_cid(op->cid);
-          const ghobject_t& oid = i.get_oid(op->oid);
-          map<string, bufferlist> aset;
-          i.decode_attrset(aset);
-          jtran->omap_setkeys(cid, oid, aset);
-        }
-        break;
-      case Transaction::OP_OMAP_RMKEYS:
-        {
-          const coll_t& cid = i.get_cid(op->cid);
-          const ghobject_t& oid = i.get_oid(op->oid);
-          set<string> keys;
-          i.decode_keyset(keys);
-          jtran->omap_rmkeys(cid, oid, keys);
-        }
-        break;
-      case Transaction::OP_OMAP_RMKEYRANGE:
-        {
-          i.decode_string();
-          i.decode_string();
-        }
-        break;
-      case Transaction::OP_OMAP_SETHEADER:
-        {
-          bufferlist bl;
-          i.decode_bl(bl);
-        }
-        break;
-      case Transaction::OP_SPLIT_COLLECTION:
-        break;
-      case Transaction::OP_SPLIT_COLLECTION2:
-        break;
-
       case Transaction::OP_SETALLOCHINT:
         {
+          assert(meta_ops->op_num == 0);
           coll_t cid = i.get_cid(op->cid);
           ghobject_t oid = i.get_oid(op->oid);
           uint64_t expected_object_size = op->expected_object_size;
           uint64_t expected_write_size = op->expected_write_size;
-          jtran->set_alloc_hint(cid, oid, expected_object_size, expected_write_size);
+          jtxn->set_alloc_hint(cid, oid, expected_object_size, expected_write_size);
+
+          data_ops->ops[data_ops->op_num++] = *op;
+          data_ops->alloc_cid = cid;
+          data_ops->alloc_obj = oid;
+        }
+        break;
+      case Transaction::OP_WRITE:
+        {
+          assert(meta_ops->op_num == 0);
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          // FIXME, fadvise flags
+          if (cid.is_meta()) {
+            delete jtxn;
+            delete data_ops;
+            delete meta_ops;
+            return true;
+          }
+          data_ops->ops[data_ops->op_num++] = *op;
+          data_ops->write_cid = cid;
+          data_ops->write_obj = oid;
+          data_ops->fadvise_flags = i.get_fadvise_flags() | op->hint_type;
+          bufferlist bl;
+          i.decode_bl(bl);
+          data_ops->write_bl = bl;
+        }
+        break;
+        
+      // Meta OPS
+      case Transaction::OP_SETATTRS:
+        {
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          map<string, bufferptr> *aset = new map<string, bufferptr>();
+          i.decode_attrset(*aset);
+          jtxn->setattrs(cid, oid, *aset);
+
+          meta_ops->ops[meta_ops->op_num++] = *op;
+          meta_ops->setattrs_cid = cid;
+          meta_ops->setattrs_obj = oid;
+          meta_ops->setattrs_pos = pos;
+          meta_ops->attrs = aset;
+        }
+        break;
+        
+      case Transaction::OP_OMAP_RMKEYS:
+        {
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          set<string> *keys = new set<string>();
+          i.decode_keyset(*keys);
+          jtxn->omap_rmkeys(cid, oid, *keys);
+
+          meta_ops->ops[meta_ops->op_num++] = *op;
+          meta_ops->rmkeys_cid = cid;
+          meta_ops->rmkeys_obj = oid;
+          meta_ops->rmkeys_pos = pos;
+          meta_ops->rmkeys = keys;
+        }
+        break;
+
+      case Transaction::OP_OMAP_SETKEYS:
+        {
+          const coll_t& cid = i.get_cid(op->cid);
+          const ghobject_t& oid = i.get_oid(op->oid);
+          map<string, bufferlist> *aset = new map<string, bufferlist>();
+          i.decode_attrset(*aset);
+          jtxn->omap_setkeys(cid, oid, *aset);
+
+          meta_ops->ops[meta_ops->op_num++] = *op;
+          meta_ops->setkeys_cid = cid;
+          meta_ops->setkeys_obj = oid;
+          meta_ops->setkeys_pos = pos;
+          meta_ops->setkeys = aset;
         }
         break;
 
@@ -2253,15 +2271,20 @@ bool XStore::get_replay_txns(list<Transaction*>& tls,
         derr << "bad op " << op->op << dendl;
         assert(0);
       }
+      pos.op++;
     }
   }
+  assert(meta_ops->op_num <= 7);
+  assert(data_ops->op_num <= 7);
+  op->meta_ops = meta_ops;
+  op->data_ops = data_ops;
   assert(jtls->empty());
-  jtls->push_back(jtran);
+  jtls->push_back(jtxn);
   return false;
 }
 
 
-bool XStore::_should_wal(list<Transaction*> &tls)
+bool XStore::init_judge_wal(list<Transaction*> &tls)
 {
   bufferlist ops_bl;
   uint32_t ops = 0;
@@ -2276,7 +2299,7 @@ bool XStore::_should_wal(list<Transaction*> &tls)
     ops_bl.append((*p)->op_bl);
     ops += (*p)->data.ops;
   }
-  if (ops <= 2) {
+  if (ops >= 7) {
     wal = true;
   }
   if (!wal) {
@@ -2368,7 +2391,7 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
     osr->pending_lock.Unlock();
 
     list<ObjectStore::Transaction*> *jtls = new list<ObjectStore::Transaction*>;
-    o->wal = get_replay_txns(o->tls, jtls);
+    o->wal = split_txns(o, jtls);
     if (o->wal) {
       delete jtls;
       jtls = &(o->tls);
@@ -2399,6 +2422,12 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
     }
     uint64_t op_num = submit_manager.op_submit_start();
     o->op = op_num;
+    if (!o->wal) {
+      MetaOps *ops = o->meta_ops;
+      ops->setattrs_pos.seq = op_num;
+      ops->rmkeys_pos.seq = op_num;
+      ops->setkeys_pos.seq = op_num;
+    }
     apply_manager.op_apply_register(op_num);
     dout(5) << "build_op " << *o << dendl;
 
@@ -2775,22 +2804,17 @@ unsigned XStore::_do_transaction(
 #endif
   int osrid = t.get_osr() ? static_cast<OpSequencer*>(t.get_osr())->id : 0;
 
-  bool wal = o? o->wal : false;
   dout(10) << "_do_transaction on " << &t << " osr " << osrid << " seq " << op_seq
-           << " trans_num " << trans_num << " wal " << wal << dendl;
+           << " trans_num " << trans_num << dendl;
 
   Transaction::iterator i = t.begin();
   
   SequencerPosition spos(op_seq, trans_num, 0);
 
-  bool do_txn_pause = false;
-  bool alloc = false;
-  bool nop = false;
-
   // should write data
   bool should_redo = !replaying || !txn_done(op_seq);
 
-  while (i.have_op() && !do_txn_pause) {
+  while (i.have_op()) {
     if (handle)
       handle->reset_tp_timeout();
 
@@ -2801,7 +2825,6 @@ unsigned XStore::_do_transaction(
 
     switch (op->op) {
     case Transaction::OP_NOP:
-      nop = true;
       break;
     case Transaction::OP_TOUCH:
       {
@@ -2827,32 +2850,8 @@ unsigned XStore::_do_transaction(
         i.decode_bl(bl);
         tracepoint(objectstore, write_enter, osr_name, off, len);
 
-        if (o && o->state != Op::STATE_ACK) {
-          if (trans_num != 0 || (!alloc && spos.op != 0) ||
-              (alloc && spos.op != 1)) {
-	    dout(0) << " transaction dump:\n";
-	    JSONFormatter f(true);
-	    f.open_object_section("transaction");
-	    t.dump(&f);
-	    f.close_section();
-	    f.flush(*_dout);
-	    *_dout << dendl;
-            assert(0 == "Unexpected Logic");
-          }
-        }
-
         if (_check_replay_guard(cid, oid, spos) > 0 && should_redo)
-          if (replaying || o->state != Op::STATE_ACK || o->wal) {
-            if (o && !o->wal) {
-              r = _write(cid, oid, off, len, bl, fadvise_flags, osrid, o,
-                    static_cast<OpSequencer*>(t.get_osr()));
-            } else {
-              r = _write(cid, oid, off, len, bl, fadvise_flags, osrid);
-            } 
-          }
-          if (!replaying && o->state != Op::STATE_ACK) {
-            do_txn_pause = true;
-          }
+          r = _write(cid, oid, off, len, bl, fadvise_flags, osrid);
         tracepoint(objectstore, write_exit, r);
         if (replaying)
           replaying_oids[cid].insert(oid);
@@ -3241,7 +3240,6 @@ unsigned XStore::_do_transaction(
 
     case Transaction::OP_SETALLOCHINT:
       {
-        alloc = true;
         coll_t cid = i.get_cid(op->cid);
         ghobject_t oid = i.get_oid(op->oid);
         uint64_t expected_object_size = op->expected_object_size;
@@ -3260,99 +3258,10 @@ unsigned XStore::_do_transaction(
     }
 
     if (r < 0) {
-      bool ok = false;
-
-      if (r == -ENOENT && !(op->op == Transaction::OP_CLONERANGE ||
-			    op->op == Transaction::OP_CLONE ||
-			    op->op == Transaction::OP_CLONERANGE2 ||
-			    op->op == Transaction::OP_COLL_ADD))
-	// -ENOENT is normally okay
-	// ...including on a replayed OP_RMCOLL with checkpoint mode
-	ok = true;
-      if (r == -ENODATA)
-	ok = true;
-
-      if (op->op == Transaction::OP_SETALLOCHINT)
-        // Either EOPNOTSUPP or EINVAL most probably.  EINVAL in most
-        // cases means invalid hint size (e.g. too big, not a multiple
-        // of block size, etc) or, at least on xfs, an attempt to set
-        // or change it when the file is not empty.  However,
-        // OP_SETALLOCHINT is advisory, so ignore all errors.
-        ok = true;
-
-      if (replaying && !backend->can_checkpoint()) {
-	if (r == -EEXIST && op->op == Transaction::OP_MKCOLL) {
-	  dout(10) << "tolerating EEXIST during journal replay since checkpoint is not enabled" << dendl;
-	  ok = true;
-	}
-	if (r == -EEXIST && op->op == Transaction::OP_COLL_ADD) {
-	  dout(10) << "tolerating EEXIST during journal replay since checkpoint is not enabled" << dendl;
-	  ok = true;
-	}
-	if (r == -EEXIST && op->op == Transaction::OP_COLL_MOVE) {
-	  dout(10) << "tolerating EEXIST during journal replay since checkpoint is not enabled" << dendl;
-	  ok = true;
-	}
-	if (r == -ERANGE) {
-	  dout(10) << "tolerating ERANGE on replay" << dendl;
-	  ok = true;
-	}
-	if (r == -ENOENT) {
-	  dout(10) << "tolerating ENOENT on replay" << dendl;
-	  ok = true;
-	}
-      }
-
-      if (!ok) {
-	const char *msg = "unexpected error code";
-
-	if (r == -ENOENT && (op->op == Transaction::OP_CLONERANGE ||
-			     op->op == Transaction::OP_CLONE ||
-			     op->op == Transaction::OP_CLONERANGE2))
-	  msg = "ENOENT on clone suggests osd bug";
-
-	if (r == -ENOSPC)
-	  // For now, if we hit _any_ ENOSPC, crash, before we do any damage
-	  // by partially applying transactions.
-	  msg = "ENOSPC handling not implemented";
-
-	if (r == -ENOTEMPTY) {
-	  msg = "ENOTEMPTY suggests garbage data in osd data dir";
-	}
-
-	dout(0) << " error " << cpp_strerror(r) << " not handled on operation " << op
-		<< " (" << spos << ", or op " << spos.op << ", counting from 0)" << dendl;
-	dout(0) << msg << dendl;
-	dout(0) << " transaction dump:\n";
-	JSONFormatter f(true);
-	f.open_object_section("transaction");
-	t.dump(&f);
-	f.close_section();
-	f.flush(*_dout);
-	*_dout << dendl;
-
-	if (r == -EMFILE) {
-	  dump_open_fds(g_ceph_context);
-	}
-
-	assert(0 == "unexpected error");
-      }
+      _do_txn_error_proc(r, op, o, &spos);
     }
 
     spos.op++;
-  }
-
-  if (!replaying && o->state != Op::STATE_ACK) {
-    if (trans_num != 0 || (spos.op != (alloc + nop + 1))) {
-      dout(0) << " transaction dump:\n";
-      JSONFormatter f(true);
-      f.open_object_section("transaction");
-      t.dump(&f);
-      f.close_section();
-      f.flush(*_dout);
-      *_dout << dendl;
-      assert(0 == "Unexpected Logic");
-    }
   }
 
   _inject_failure();
@@ -3360,6 +3269,96 @@ unsigned XStore::_do_transaction(
   return 0;  // FIXME count errors
 }
 
+
+void XStore::_do_txn_error_proc(int r, Transaction::Op *op, Op *o, SequencerPosition *spos)
+{
+  bool ok = false;
+  
+  if (r == -ENOENT && !(op->op == Transaction::OP_CLONERANGE ||
+                        op->op == Transaction::OP_CLONE ||
+                        op->op == Transaction::OP_CLONERANGE2 ||
+                        op->op == Transaction::OP_COLL_ADD))
+    // -ENOENT is normally okay
+    // ...including on a replayed OP_RMCOLL with checkpoint mode
+    ok = true;
+  if (r == -ENODATA)
+    ok = true;
+  
+  if (op->op == Transaction::OP_SETALLOCHINT)
+    // Either EOPNOTSUPP or EINVAL most probably.  EINVAL in most
+    // cases means invalid hint size (e.g. too big, not a multiple
+    // of block size, etc) or, at least on xfs, an attempt to set
+    // or change it when the file is not empty.  However,
+    // OP_SETALLOCHINT is advisory, so ignore all errors.
+    ok = true;
+  
+  if (replaying && !backend->can_checkpoint()) {
+    if (r == -EEXIST && op->op == Transaction::OP_MKCOLL) {
+      dout(10) << "tolerating EEXIST during journal replay since checkpoint is not enabled" << dendl;
+      ok = true;
+    }
+    if (r == -EEXIST && op->op == Transaction::OP_COLL_ADD) {
+      dout(10) << "tolerating EEXIST during journal replay since checkpoint is not enabled" << dendl;
+      ok = true;
+    }
+    if (r == -EEXIST && op->op == Transaction::OP_COLL_MOVE) {
+      dout(10) << "tolerating EEXIST during journal replay since checkpoint is not enabled" << dendl;
+      ok = true;
+    }
+    if (r == -ERANGE) {
+      dout(10) << "tolerating ERANGE on replay" << dendl;
+      ok = true;
+    }
+    if (r == -ENOENT) {
+      dout(10) << "tolerating ENOENT on replay" << dendl;
+      ok = true;
+    }
+  }
+  
+  if (!ok) {
+    const char *msg = "unexpected error code";
+  
+    if (r == -ENOENT && (op->op == Transaction::OP_CLONERANGE ||
+    		     op->op == Transaction::OP_CLONE ||
+    		     op->op == Transaction::OP_CLONERANGE2))
+      msg = "ENOENT on clone suggests osd bug";
+  
+    if (r == -ENOSPC)
+      // For now, if we hit _any_ ENOSPC, crash, before we do any damage
+      // by partially applying transactions.
+      msg = "ENOSPC handling not implemented";
+  
+    if (r == -ENOTEMPTY) {
+      msg = "ENOTEMPTY suggests garbage data in osd data dir";
+    }
+  
+    if (spos) {
+      dout(0) << " error " << cpp_strerror(r) << " not handled on operation " << op
+              << " (" << *spos << ", or op " << spos->op << ", counting from 0)" << dendl;
+    } else {
+      dout(0) << " error " << cpp_strerror(r) << " not handled on operation " << dendl;
+    }
+    dout(0) << msg << dendl;
+    for (list<Transaction*>::iterator it = o->tls.begin(); 
+         it != o->tls.end();
+         it++) {
+      Transaction &t = *(*it);
+      dout(0) << " transaction dump:\n";
+      JSONFormatter f(true);
+      f.open_object_section("transaction");
+      t.dump(&f);
+      f.close_section();
+      f.flush(*_dout);
+      *_dout << dendl;
+    }
+  
+    if (r == -EMFILE) {
+      dump_open_fds(g_ceph_context);
+    }
+  
+    assert(0 == "unexpected error");
+  }
+}
   /*********************************************/
 
 

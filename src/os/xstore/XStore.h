@@ -317,10 +317,56 @@ public:
   } jwa_thread;
 
   // -- op workqueue --
+  struct DataOps {
+    Transaction::Op ops[7];
+    uint32_t op_num;
+
+    coll_t alloc_cid;
+    ghobject_t alloc_obj;
+
+    coll_t write_cid;
+    ghobject_t write_obj;
+    bufferlist write_bl;
+    uint32_t fadvise_flags;
+
+    DataOps(): op_num(0), fadvise_flags(0) {}
+  };
+
+  struct MetaOps {
+    Transaction::Op ops[7];
+    uint32_t op_num;
+
+    coll_t setattrs_cid;
+    ghobject_t setattrs_obj;
+    SequencerPosition setattrs_pos;
+    map<string, bufferptr> *attrs;
+
+    coll_t rmkeys_cid;
+    ghobject_t rmkeys_obj;
+    SequencerPosition rmkeys_pos;
+    set<string> *rmkeys;
+
+    coll_t setkeys_cid;
+    ghobject_t setkeys_obj;
+    SequencerPosition setkeys_pos;
+    map<string, bufferlist> *setkeys;
+
+    MetaOps(): op_num(0), attrs(NULL), rmkeys(NULL), setkeys(NULL) {}
+
+    ~MetaOps() {
+      delete attrs;
+      delete rmkeys;
+      delete setkeys;
+    }
+  };
+
   struct Op {
     utime_t start;
     uint64_t op;
     list<Transaction*> tls;
+    DataOps *data_ops;
+    MetaOps *meta_ops;
+
     Context *ondisk, *onreadable, *onreadable_sync;
     uint64_t ops, bytes;
     TrackedOpRef osd_op;
@@ -338,7 +384,7 @@ public:
     list<bufferptr> aio_bl;
     Mutex lock;
 
-    Op() : lock("Op::lock") {}
+    Op() : data_ops(NULL), meta_ops(NULL), lock("Op::lock") {}
     bool has_aio() {
       assert(lock.is_locked());
       return aio.read() > 0;
@@ -348,6 +394,11 @@ public:
     }
     void put_lock() {
       lock.Unlock();
+    }
+
+    ~Op() {
+      delete data_ops;
+      delete meta_ops;
     }
   };
 
@@ -607,7 +658,7 @@ public:
   void op_queue_release_throttle(Op *o);
   void _journaled_written(Op *o);
   void _journaled_ack_written(list<Op *> acks);
-  bool get_replay_txns(list<Transaction*>& tls, list<Transaction*>* jtls);
+  bool split_txns(Op *op, list<Transaction*>* jtls);
   friend struct C_JournaledWritten;
   friend struct C_JournaledAckWritten;
 
@@ -698,11 +749,14 @@ public:
     Transaction& t, uint64_t op_seq, int trans_num, Op *o,
     ThreadPool::TPHandle *handle);
 
+  unsigned _do_data_txn(Op *op, ThreadPool::TPHandle *handle);
+  unsigned _do_meta_txn(Op *op, ThreadPool::TPHandle *handle);
+  void _do_txn_error_proc(int r, Transaction::Op *op, Op *o, SequencerPosition *spos = NULL);
   int queue_transactions(Sequencer *osr, list<Transaction*>& tls,
 			 TrackedOpRef op = TrackedOpRef(),
 			 ThreadPool::TPHandle *handle = NULL);
 
-  bool _should_wal(list<Transaction*> &tls);
+  bool init_judge_wal(list<Transaction*> &tls);
   /**
    * set replay guard xattr on given file
    *
