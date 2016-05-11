@@ -13,6 +13,13 @@
 #endif
 
 static atomic_t cfd(0);
+Messenger *Messenger::create_client_messenger(CephContext *cct, string lname)
+{
+  uint64_t nonce = 0;
+  get_random_bytes((char*)&nonce, sizeof(nonce));
+  return Messenger::create(cct, cct->_conf->ms_type, entity_name_t::CLIENT(),
+			   lname, nonce);
+}
 
 Messenger *Messenger::create(CephContext *cct, const string &type,
 			     entity_name_t name, string lname,

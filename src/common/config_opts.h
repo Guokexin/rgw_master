@@ -589,7 +589,7 @@ OPTION(osd_snap_trim_thread_timeout, OPT_INT, 60*60*1)
 OPTION(osd_snap_trim_thread_suicide_timeout, OPT_INT, 60*60*10)
 OPTION(osd_snap_trim_sleep, OPT_FLOAT, 0)
 OPTION(osd_scrub_thread_timeout, OPT_INT, 60)
-OPTION(osd_scrub_thread_suicide_timeout, OPT_INT, 60)
+OPTION(osd_scrub_thread_suicide_timeout, OPT_INT, 300)
 OPTION(osd_scrub_finalize_thread_timeout, OPT_INT, 60*10)
 OPTION(osd_scrub_invalid_stats, OPT_BOOL, true)
 OPTION(osd_remove_thread_timeout, OPT_INT, 60*60)
@@ -634,6 +634,7 @@ OPTION(osd_scrub_end_hour, OPT_INT, 24)
 OPTION(osd_scrub_load_threshold, OPT_FLOAT, 0.5)
 OPTION(osd_scrub_min_interval, OPT_FLOAT, 60*60*24)    // if load is low
 OPTION(osd_scrub_max_interval, OPT_FLOAT, 7*60*60*24)  // regardless of load
+OPTION(osd_scrub_interval_randomize_ratio, OPT_FLOAT, 0.5) // randomize the scheduled scrub in the span of [min,min*(1+randomize_radio))
 OPTION(osd_scrub_chunk_min, OPT_INT, 5)
 OPTION(osd_scrub_chunk_max, OPT_INT, 25)
 OPTION(osd_scrub_sleep, OPT_FLOAT, 0)   // sleep between [deep]scrub ops
@@ -689,6 +690,7 @@ OPTION(osd_failsafe_full_ratio, OPT_FLOAT, .97) // what % full makes an OSD "ful
 OPTION(osd_failsafe_nearfull_ratio, OPT_FLOAT, .90) // what % full makes an OSD near full (failsafe)
 
 OPTION(osd_pg_object_context_cache_count, OPT_INT, 64)
+OPTION(osd_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
 
 // determines whether PGLog::check() compares written out log to stored log
 OPTION(osd_debug_pg_log_writeout, OPT_BOOL, false)
@@ -760,6 +762,7 @@ OPTION(osd_max_attr_name_len, OPT_U32, 100)    // max rados attr name len; canno
 OPTION(osd_max_attr_size, OPT_U64, 0)
 
 OPTION(osd_objectstore, OPT_STR, "filestore")  // ObjectStore backend type
+OPTION(osd_objectstore_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
 // Override maintaining compatibility with older OSDs
 // Set to true for testing.  Users should NOT set this.
 OPTION(osd_debug_override_acting_compat, OPT_BOOL, false)
@@ -833,7 +836,10 @@ OPTION(filestore_fadvise, OPT_BOOL, true)
 // data corruption in xfs prior to kernel 3.5.  filestore will
 // implicity disable this if it cannot confirm the kernel is newer
 // than that.
-OPTION(filestore_xfs_extsize, OPT_BOOL, true)
+// NOTE: This option involves a tradeoff: When disabled, fragmentation is
+// worse, but large sequential writes are faster. When enabled, large
+// sequential writes are slower, but fragmentation is reduced.
+OPTION(filestore_xfs_extsize, OPT_BOOL, false)
 
 OPTION(filestore_journal_parallel, OPT_BOOL, false)
 OPTION(filestore_journal_writeahead, OPT_BOOL, false)
@@ -901,6 +907,7 @@ OPTION(journal_discard, OPT_BOOL, false) //using ssd disk as journal, whether su
 
 OPTION(rados_mon_op_timeout, OPT_DOUBLE, 0) // how many seconds to wait for a response from the monitor before returning an error from a rados operation. 0 means on limit.
 OPTION(rados_osd_op_timeout, OPT_DOUBLE, 0) // how many seconds to wait for a response from osds before returning an error from a rados operation. 0 means no limit.
+OPTION(rados_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
 
 OPTION(rbd_op_threads, OPT_INT, 1)
 OPTION(rbd_op_thread_timeout, OPT_INT, 60)
@@ -926,6 +933,8 @@ OPTION(rbd_blacklist_on_break_lock, OPT_BOOL, true) // whether to blacklist clie
 OPTION(rbd_blacklist_expire_seconds, OPT_INT, 0) // number of seconds to blacklist - set to 0 for OSD default
 OPTION(rbd_request_timed_out_seconds, OPT_INT, 30) // number of seconds before maint request times out
 OPTION(rbd_enable_alloc_hint, OPT_BOOL, true) // when writing a object, it will issue a hint to osd backend to indicate the expected size object need
+OPTION(rbd_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
+OPTION(rbd_validate_pool, OPT_BOOL, false) // true if empty pools should be validated for RBD compatibility
 
 /*
  * The following options change the behavior for librbd's image creation methods that
@@ -955,6 +964,7 @@ OPTION(nss_db_path, OPT_STR, "") // path to nss db
 
 
 OPTION(rgw_max_chunk_size, OPT_INT, 512 * 1024)
+OPTION(rgw_max_put_size, OPT_U64, 5ULL*1024*1024*1024)
 
 /**
  * override max bucket index shards in zone configuration (if not zero)

@@ -4053,6 +4053,10 @@ void Monitor::handle_subscribe(MMonSubscribe *m)
       }
     } else if (p->first == "osdmap") {
       if ((int)s->is_capable("osd", MON_CAP_R)) {
+	if (s->osd_epoch > p->second.start) {
+	  // client needs earlier osdmaps on purpose, so reset the sent epoch
+	  s->osd_epoch = 0;
+	}
         osdmon()->check_sub(s->sub_map["osdmap"]);
       }
     } else if (p->first == "osd_pg_creates") {
@@ -4668,9 +4672,9 @@ bool Monitor::ms_verify_authorizer(Connection *con, int peer_type,
       CephXServiceTicketInfo auth_ticket_info;
       
       if (authorizer_data.length()) {
-	int ret = cephx_verify_authorizer(g_ceph_context, &keyring, iter,
+	bool ret = cephx_verify_authorizer(g_ceph_context, &keyring, iter,
 					  auth_ticket_info, authorizer_reply);
-	if (ret >= 0) {
+	if (ret) {
 	  session_key = auth_ticket_info.session_key;
 	  isvalid = true;
 	} else {

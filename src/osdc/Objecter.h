@@ -1561,6 +1561,7 @@ public:
     // we trigger these from an async finisher
     Context *on_notify_finish;
     bufferlist *notify_result_bl;
+    uint64_t notify_id;
 
     WatchContext *watch_context;
 
@@ -1595,6 +1596,7 @@ public:
 		 on_reg_commit(NULL),
 		 on_notify_finish(NULL),
 		 notify_result_bl(NULL),
+		 notify_id(0),
 		 watch_context(NULL),
 		 session(NULL),
 		 register_tid(0),
@@ -1619,6 +1621,7 @@ public:
   struct C_Linger_Commit : public Context {
     Objecter *objecter;
     LingerOp *info;
+    bufferlist outbl;  // used for notify only
     C_Linger_Commit(Objecter *o, LingerOp *l) : objecter(o), info(l) {
       info->get();
     }
@@ -1626,7 +1629,7 @@ public:
       info->put();
     }
     void finish(int r) {
-      objecter->_linger_commit(info, r);
+      objecter->_linger_commit(info, r, outbl);
     }
   };
 
@@ -1782,7 +1785,7 @@ public:
 
   void _linger_submit(LingerOp *info);
   void _send_linger(LingerOp *info);
-  void _linger_commit(LingerOp *info, int r);
+  void _linger_commit(LingerOp *info, int r, bufferlist& outbl);
   void _linger_reconnect(LingerOp *info, int r);
   void _send_linger_ping(LingerOp *info);
   void _linger_ping(LingerOp *info, int r, utime_t sent, uint32_t register_gen);
@@ -1971,6 +1974,7 @@ private:
 public:
   ceph_tid_t op_submit(Op *op, int *ctx_budget = NULL);
   bool is_active() {
+    RWLock::RLocker l(rwlock);
     return !((!inflight_ops.read()) && linger_ops.empty() && poolstat_ops.empty() && statfs_ops.empty());
   }
 

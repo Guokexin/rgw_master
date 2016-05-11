@@ -808,8 +808,13 @@ int RGWGetObj::handle_user_manifest(const char *prefix)
   if (pos < 0)
     return -EINVAL;
 
-  string bucket_name = prefix_str.substr(0, pos);
-  string obj_prefix = prefix_str.substr(pos + 1);
+  string bucket_name_raw, bucket_name;
+  bucket_name_raw = prefix_str.substr(0, pos);
+  url_decode(bucket_name_raw, bucket_name);
+
+  string obj_prefix_raw, obj_prefix;
+  obj_prefix_raw = prefix_str.substr(pos + 1);
+  url_decode(obj_prefix_raw, obj_prefix);
 
   rgw_bucket bucket;
 
@@ -1059,7 +1064,7 @@ void RGWStatAccount::execute()
   do {
     RGWUserBuckets buckets;
 
-    ret = rgw_read_user_buckets(store, s->user.user_id, buckets, marker, max_buckets, true);
+    ret = rgw_read_user_buckets(store, s->user.user_id, buckets, marker, max_buckets, false);
     if (ret < 0) {
       /* hmm.. something wrong here.. the user was authenticated, so it
          should exist */
@@ -2020,6 +2025,7 @@ void RGWPostObj::execute()
     goto done;
   }
 
+  processor->complete_hash(&hash);
   hash.Final(m);
   buf_to_hex(m, CEPH_CRYPTO_MD5_DIGESTSIZE, calc_md5);
 
@@ -2562,8 +2568,17 @@ void RGWPutACLs::execute()
   new_policy.encode(bl);
   obj = rgw_obj(s->bucket, s->object);
   map<string, bufferlist> attrs;
-  attrs[RGW_ATTR_ACL] = bl;
+
   store->set_atomic(s->obj_ctx, obj);
+
+  if (!s->object.empty()) {
+    ret = get_obj_attrs(store, s, obj, attrs);
+    if (ret < 0)
+      return;
+  }
+  
+  attrs[RGW_ATTR_ACL] = bl;
+
   if (!s->object.empty()) {
     ret = store->set_attrs(s->obj_ctx, obj, attrs, NULL, ptracker);
   } else {

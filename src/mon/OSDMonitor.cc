@@ -421,9 +421,6 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
 
   for (int o = 0; o < osdmap.get_max_osd(); o++) {
     if (osdmap.is_down(o)) {
-      // invalidate osd_epoch cache
-      osd_epoch.erase(o);
-
       // populate down -> out map
       if (osdmap.is_in(o) &&
 	  down_pending_out.count(o) == 0) {
@@ -432,11 +429,7 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
       }
     }
   }
-  // blow away any osd_epoch items beyond max_osd
-  map<int,epoch_t>::iterator p = osd_epoch.upper_bound(osdmap.get_max_osd());
-  while (p != osd_epoch.end()) {
-    osd_epoch.erase(p++);
-  }
+  // XXX: need to trim MonSession connected with a osd whose id > max_osd?
 
   /** we don't have any of the feature bit infrastructure in place for
    * supporting primary_temp mappings without breaking old clients/OSDs.*/
@@ -2454,19 +2447,13 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
 	  << " to " << req->get_orig_source_inst()
 	  << dendl;
 
-  int osd = -1;
-  if (req->get_source().is_osd()) {
-    osd = req->get_source().num();
-    map<int,epoch_t>::iterator p = osd_epoch.find(osd);
-    if (p != osd_epoch.end()) {
-      if (first <= p->second) {
-	dout(10) << __func__ << " osd." << osd << " should already have epoch "
-		 << p->second << dendl;
-	first = p->second + 1;
-	if (first > osdmap.get_epoch())
-	  return;
-      }
-    }
+  MonSession *s = req->get_session();
+  if (s && first <= s->osd_epoch) {
+    dout(10) << __func__ << s->inst << " should already have epoch "
+	     << s->osd_epoch << dendl;
+    first = s->osd_epoch + 1;
+    if (first > osdmap.get_epoch())
+      return;
   }
 
   if (first < get_first_committed()) {
@@ -2485,8 +2472,9 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
     m->maps[first] = bl;
     mon->send_reply(req, m);
 
-    if (osd >= 0)
-      note_osd_has_epoch(osd, osdmap.get_epoch());
+    if (s) {
+      s->osd_epoch = osdmap.get_epoch();
+    }
     return;
   }
 
@@ -2499,28 +2487,8 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
   m->newest_map = osdmap.get_epoch();
   mon->send_reply(req, m);
 
-  if (osd >= 0)
-    note_osd_has_epoch(osd, last);
-}
-
-// FIXME: we assume the OSD actually receives this.  if the mon
-// session drops and they reconnect we may not share the same maps
-// with them again, which could cause a strange hang (perhaps stuck
-// 'waiting for osdmap' requests?).  this information should go in the
-// MonSession, but I think these functions need to be refactored in
-// terms of MonSession first for that to work.
-void OSDMonitor::note_osd_has_epoch(int osd, epoch_t epoch)
-{
-  dout(20) << __func__ << " osd." << osd << " epoch " << epoch << dendl;
-  map<int,epoch_t>::iterator p = osd_epoch.find(osd);
-  if (p != osd_epoch.end()) {
-    dout(20) << __func__ << " osd." << osd << " epoch " << epoch
-	     << " (was " << p->second << ")" << dendl;
-    p->second = epoch;
-  } else {
-    dout(20) << __func__ << " osd." << osd << " epoch " << epoch << dendl;
-    osd_epoch[osd] = epoch;
-  }
+  if (s)
+    s->osd_epoch = last;
 }
 
 void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
@@ -2544,6 +2512,7 @@ void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
     m->newest_map = osdmap.get_epoch();
     m->maps[first] = bl;
     session->con->send_message(m);
+    session->osd_epoch = first;
     first++;
   }
 
@@ -2553,9 +2522,7 @@ void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
     MOSDMap *m = build_incremental(first, last);
     session->con->send_message(m);
     first = last + 1;
-
-    if (session->inst.name.is_osd())
-      note_osd_has_epoch(session->inst.name.num(), last);
+    session->osd_epoch = last;
 
     if (onetime)
       break;
@@ -6556,7 +6523,7 @@ done:
     const pg_pool_t *tp = osdmap.get_pg_pool(tierpool_id);
     assert(tp);
 
-    if (!_check_remove_tier(pool_id, p, &err, &ss)) {
+    if (!_check_remove_tier(pool_id, p, tp, &err, &ss)) {
       goto reply;
     }
 
@@ -6661,7 +6628,7 @@ done:
       goto reply;
     }
 
-    if (!_check_remove_tier(pool_id, p, &err, &ss)) {
+    if (!_check_remove_tier(pool_id, p, NULL, &err, &ss)) {
       goto reply;
     }
 
@@ -7327,17 +7294,29 @@ bool OSDMonitor::_check_become_tier(
  */
 bool OSDMonitor::_check_remove_tier(
     const int64_t base_pool_id, const pg_pool_t *base_pool,
+    const pg_pool_t *tier_pool,
     int *err, ostream *ss) const
 {
   const std::string &base_pool_name = osdmap.get_pool_name(base_pool_id);
 
-  // If the pool is in use by CephFS, then refuse to remove its
-  // tier
+  // Apply CephFS-specific checks
   const MDSMap &pending_mdsmap = mon->mdsmon()->pending_mdsmap;
   if (pending_mdsmap.pool_in_use(base_pool_id)) {
-    *ss << "pool '" << base_pool_name << "' is in use by CephFS via its tier";
-    *err = -EBUSY;
-    return false;
+    if (base_pool->type != pg_pool_t::TYPE_REPLICATED) {
+      // If the underlying pool is erasure coded, we can't permit the
+      // removal of the replicated tier that CephFS relies on to access it
+      *ss << "pool '" << base_pool_name << "' is in use by CephFS via its tier";
+      *err = -EBUSY;
+      return false;
+    }
+
+    if (tier_pool && tier_pool->cache_mode == pg_pool_t::CACHEMODE_WRITEBACK) {
+      *ss << "pool '" << base_pool_name << "' is in use by CephFS, and this "
+             "tier is still in use as a writeback cache.  Change the cache "
+             "mode and flush the cache before removing it";
+      *err = -EBUSY;
+      return false;
+    }
   }
 
   *err = 0;
