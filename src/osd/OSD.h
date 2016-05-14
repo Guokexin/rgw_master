@@ -1842,7 +1842,7 @@ protected:
   bool timeout_mon_on_pg_stats;
   void restart_stats_timer() {
     Mutex::Locker l(osd_lock);
-    last_pg_stats_ack = ceph_clock_now(cct);
+    last_pg_stats_ack = ceph_mono_clock_now(cct);
     timeout_mon_on_pg_stats = true;
   }
 

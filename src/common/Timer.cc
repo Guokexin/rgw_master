@@ -46,7 +46,7 @@ typedef std::multimap < utime_t, Context *> scheduled_map_t;
 typedef std::map < Context*, scheduled_map_t::iterator > event_lookup_map_t;
 
 SafeTimer::SafeTimer(CephContext *cct_, Mutex &l, bool safe_callbacks)
-  : cct(cct_), lock(l),
+  : cct(cct_), lock(l), cond(true),
     safe_callbacks(safe_callbacks),
     thread(NULL),
     stopping(false)
@@ -85,32 +85,8 @@ void SafeTimer::timer_thread()
 {
   lock.Lock();
   ldout(cct,10) << "timer_thread starting" << dendl;
-  utime_t last;
   while (!stopping) {
-    // fire all the events already in the queue if the system time
-    // is changed to some time ago
-    utime_t now = ceph_clock_now(cct);
-    if (now < last) {
-      last = now;
-      ldout(cct,0) << "fire all events" << dendl;
-      while (!schedule.empty()) {
-        scheduled_map_t::iterator p = schedule.begin();
-
-        Context *callback = p->second;
-        events.erase(callback);
-        schedule.erase(p);
-        ldout(cct,10) << "timer_thread executing " << callback << dendl;
-
-        if (!safe_callbacks)
-          lock.Unlock();
-        callback->complete(0);
-        if (!safe_callbacks)
-          lock.Lock();
-      }
-      now = ceph_clock_now(cct); // recalc now
-    } else {
-      last = now;
-    }
+    utime_t now = ceph_mono_clock_now(cct);
     
     while (!schedule.empty()) {
       scheduled_map_t::iterator p = schedule.begin();
@@ -139,7 +115,7 @@ void SafeTimer::timer_thread()
     if (schedule.empty())
       cond.Wait(lock);
     else
-      cond.WaitUntil(lock, schedule.begin()->first);
+      cond.WaitUntil(lock, schedule.begin()->first, true);
     ldout(cct,20) << "timer_thread awake" << dendl;
   }
   ldout(cct,10) << "timer_thread exiting" << dendl;
@@ -150,7 +126,7 @@ void SafeTimer::add_event_after(double seconds, Context *callback)
 {
   assert(lock.is_locked());
 
-  utime_t when = ceph_clock_now(cct);
+  utime_t when = ceph_mono_clock_now(cct);
   when += seconds;
   add_event_at(when, callback);
 }
