@@ -117,6 +117,7 @@ class AsyncConnection : public Connection {
     }
     return m;
   }
+  void reset_recv_state();
 
  public:
   AsyncConnection(CephContext *cct, AsyncMessenger *m, DispatchQueue *q, EventCenter *c, PerfCounters *p);
