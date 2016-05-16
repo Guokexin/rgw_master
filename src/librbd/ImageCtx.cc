@@ -1073,7 +1073,7 @@ public:
         break;
 
       /* the IO will be executed, do the accounting */
-      throttle.account(is_write, (*it)->get_object_len(), true);
+      throttle.account(is_write, (*it)->get_object_len(), false);
     }
     reqs.splice(reqs.begin(), throttle_req,
                 throttle_req.begin(), it);

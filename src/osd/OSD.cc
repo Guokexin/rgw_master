@@ -8937,11 +8937,13 @@ void OSD::process_throttled_recoveries()
     return;
   }
 
+  bool release_timer_wait = true;
   while (!throttled_recs.empty()) {
-    if (rec_throttle.schedule_timer(true)) {
+    if (rec_throttle.schedule_timer(release_timer_wait)) {
       dout(20) << __func__ << " need to wait"<< dendl;
       break;
     }
+    release_timer_wait = false;
 
     // Start the recovery op
     boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> throttled_rec =
@@ -8952,7 +8954,7 @@ void OSD::process_throttled_recoveries()
     int priority = boost::get<2>(throttled_rec);
     rec_throttle_lock.Unlock(); // release the throttle lock to avoid deadlock with pg lock
     pg->lock();
-    bool more = pg->get_pgbackend()->run_recovery_op_throttle(rec_handle, priority, true);
+    bool more = pg->get_pgbackend()->run_recovery_op_throttle(rec_handle, priority, false);
     pg->unlock();
     rec_throttle_lock.Lock();
     if (more) {
