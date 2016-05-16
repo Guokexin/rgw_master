@@ -1744,14 +1744,13 @@ ssize_t AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlis
 
   if (existing->policy.lossy) {
     // disconnect from the Connection
-    existing->dispatch_queue->queue_reset(this);
     ldout(async_msgr->cct, 1) << __func__ << " replacing on lossy channel, failing existing" << dendl;
     existing->_stop();
+    existing->dispatch_queue->queue_reset(this);
   } else {
     assert(can_write == NOWRITE);
     existing->write_lock.Lock(true);
     // queue a reset on the new connection, which we're dumping for the old
-    dispatch_queue->queue_reset(this);
 
     // reset the in_seq if this is a hard reset from peer,
     // otherwise we respect our original connection's value
@@ -1793,6 +1792,7 @@ ssize_t AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlis
 
     ldout(async_msgr->cct, 1) << __func__ << " stop myself to swap existing" << dendl;
     _stop();
+    dispatch_queue->queue_reset(this);
     existing->lock.Unlock();
     return 0;
   }
@@ -2081,11 +2081,10 @@ void AsyncConnection::fault()
     return ;
   }
 
-  reset_recv_state();
   if (policy.lossy && !(state >= STATE_CONNECTING && state < STATE_CONNECTING_READY)) {
     ldout(async_msgr->cct, 1) << __func__ << " on lossy channel, failing" << dendl;
-    dispatch_queue->queue_reset(this);
     _stop();
+    dispatch_queue->queue_reset(this);
     return ;
   }
 
@@ -2111,13 +2110,13 @@ void AsyncConnection::fault()
     ldout(async_msgr->cct, 0) << __func__ << " with nothing to send and in the half "
                               << " accept state just closed, state="
                               << get_state_name(state) << dendl;
-    dispatch_queue->queue_reset(this);
-
     write_lock.Unlock();
     _stop();
+    dispatch_queue->queue_reset(this);
     return ;
   }
 
+  reset_recv_state();
   if (policy.standby && !is_queued()) {
     ldout(async_msgr->cct,0) << __func__ << " with nothing to send, going to standby" << dendl;
     state = STATE_STANDBY;
