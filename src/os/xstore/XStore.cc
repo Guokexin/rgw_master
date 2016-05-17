@@ -127,7 +127,7 @@ struct C_AioCallBack : public Context {
     // FIXME
     XStore::AioArgs *aioargs = static_cast<XStore::AioArgs*>(args);
     XStore *store = aioargs->fs;
-    store->aio_callback(aioargs);
+    store->_txn_aio_finish(aioargs);
   }
 };
 
@@ -1753,7 +1753,7 @@ void XStore::queue_op(OpSequencer *osr, Op *o)
   dout(5) << "queue_op " << o << " seq " << o->op
 	  << " " << *osr
 	  << " " << o->bytes << " bytes"
-	  << "   (queue has " << op_queue_len << " ops and " << op_queue_bytes << " bytes)"
+	  << " (queue has " << op_queue_len << " ops and " << op_queue_bytes << " bytes)"
 	  << dendl;
   op_wq.queue(osr);
 }
@@ -1810,6 +1810,56 @@ void XStore::op_queue_release_throttle(Op *o)
   logger->set(l_xs_oq_bytes, op_queue_bytes);
 }
 
+void XStore::_txn_state_proc(Op *o)
+{
+  dout(10) << "_txn_state_proc " << o->op << " " << o->get_state_name() << dendl;
+  assert(o->lock.is_locked());
+  while (true) {
+    switch(o->state) {
+    case Op::STATE_INIT:
+      if (o->journal_done)
+        o->state = Op::STATE_JOURNAL;
+      else if (o->data_done)
+        o->state = Op::STATE_WRITE;
+      goto out;
+
+    case Op::STATE_WRITE:
+      assert(o->data_done);
+      if (o->journal_done)
+        o->state = Op::STATE_COMMIT;
+      else {
+        dout(20) << "wait journal finish " << o->op << dendl;
+        goto out;
+      }
+      break;
+
+    case Op::STATE_JOURNAL:
+      assert(o->journal_done);
+      if (o->data_done)
+        o->state = Op::STATE_COMMIT;
+      else {
+        dout(20) << "wait xstore finish " << o->op << dendl;
+        goto out;
+      }
+      break;
+
+    case Op::STATE_COMMIT:
+      {
+        Mutex::Locker l(jwa_lock);
+        jwa_queue.push_back(o);
+        jwa_cond.SignalOne();
+      }
+      goto out;
+
+    default:
+      assert(false);
+      return;
+    }
+  }
+out:
+  dout(15) << "_txn_state_proc " << o->op << " s = " << o->get_state_name() << dendl;
+}
+
 void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 {  
   // inject a stall?
@@ -1824,39 +1874,44 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 
   osr->apply_lock.Lock();
   Op *o = osr->peek_queue();
-  o->get_lock();
-  assert(o->state == Op::STATE_ACK ||
-         o->state == Op::STATE_INIT ||
-         o->state == Op::STATE_JOURNAL);
-  if (o->state != Op::STATE_ACK) {
-    apply_manager.op_apply_start(o->op);
-  }
-  dout(5) << "_do_op " << *o << " start" << dendl;
+
+  dout(10) << "_do_op " << *o << " " << o->get_state_name() << dendl;
+  Mutex::Locker l(o->lock);
   int r = 0;
-  if (o->state == Op::STATE_ACK || !(o->wal)) {
-    if (o->state != Op::STATE_ACK) {
+  switch(o->state) {
+  case Op::STATE_INIT:
+  case Op::STATE_JOURNAL:
+    apply_manager.op_apply_start(o->op);
+    if (!o->wal) {
       r = _do_data_txn(o, &handle);
     } else {
-      if (o->wal) {
-        r = _do_transactions(o->tls, o->op, o, &handle);
-      } else {
-        r = _do_meta_txn(o, &handle);
-      }
+      dout(10) << "_do_op skip " << o->op << dendl;
     }
-    dout(10) << "_do_op " << o << " seq " << o->op << " r = " << r
-      	     << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
-  } else {
-    dout(10) << "_do_op skip " << o << " seq " << o->op << " r = " << r
-	     << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
-  }
-  if (o->state == Op::STATE_ACK) {
+    if (!o->has_aio())
+      o->data_done = true;
+    _txn_state_proc(o);
+    break;
+  
+  case Op::STATE_ACK:
+    if (!o->wal) {
+      r = _do_meta_txn(o, &handle);
+    } else {
+      r = _do_transactions(o->tls, o->op, o, &handle);
+    }
     apply_manager.op_apply_finish(o->op);
-  }
-}
+    o->state = Op::STATE_DONE;
+    break;
 
+  default:
+    assert(false);
+  }
+  dout(10) << "_do_op " << o->op << " " << o->get_state_name() << " r = " << r
+           << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
+}
 
 unsigned XStore::_do_data_txn(Op *ops, ThreadPool::TPHandle *handle)
 {
+  dout(10) << "_do_data_txn " << ops->op << " " << ops->get_state_name() << dendl;
   int r = 0;
   DataOps *data_ops = ops->data_ops;
   for (uint32_t i = 0; i< data_ops->op_num; i++) {
@@ -1900,6 +1955,7 @@ unsigned XStore::_do_data_txn(Op *ops, ThreadPool::TPHandle *handle)
 
 unsigned XStore::_do_meta_txn(Op *ops, ThreadPool::TPHandle *handle)
 {
+  dout(10) << "_do_meta_txn " << ops->op << " " << ops->get_state_name() << dendl;
   int r = 0;
   MetaOps *meta_ops = ops->meta_ops;
   for (uint32_t i = 0; i< meta_ops->op_num; i++) {
@@ -1940,21 +1996,14 @@ unsigned XStore::_do_meta_txn(Op *ops, ThreadPool::TPHandle *handle)
   return 0;
 }
 
-void XStore::aio_callback(AioArgs *args)
+void XStore::_txn_aio_finish(AioArgs *args)
 {
   if (!m_enable_mscache_aio)
     assert(0 == "MSCACHE IS TURN OFF");
   Op *o = args->op;
-  OpSequencer *osr = args->osr;
-  dout(10) << "aio_callback " << *osr << " " << *o << " pending "
-           << o->aio.read() << dendl;
-
-  o->get_lock();
-  assert(o->aio.dec() == 0);
-  o->put_lock();
-
-  FDRef &fd = args->fd;
+  dout(10) << "_txn_aio_finish " << o->op << " " << o->get_state_name() << dendl;
   {
+    FDRef &fd = args->fd;
     Mutex::Locker l(fd->lock);
     fd->aio.dec();
     if (args->truncate) {
@@ -1962,93 +2011,62 @@ void XStore::aio_callback(AioArgs *args)
     }
     fd->cond.Signal();
   }
-  assert(o->state != Op::STATE_ACK);
-  {
-    Mutex::Locker l(jwa_lock);
-    if (o->state == Op::STATE_INIT) {
-      o->state = Op::STATE_WRITE;
-    } else if (o->state == Op::STATE_JOURNAL) {
-      o->state = Op::STATE_COMMIT;
-      jwa_queue.push_back(o);
-      jwa_cond.SignalOne();
-    }
-  }
-
-  dout(10) << "aio_callback put op to jwa_queue " << *o
-           << " " << *osr << dendl;
+  Mutex::Locker l(o->lock);
+  assert(o->aio.dec() == 0);
+  o->data_done = true;
+  _txn_state_proc(o);
   delete args;
 }
 
 void XStore::_finish_op(OpSequencer *osr)
 {
   Op *o = osr->peek_queue();
-  dout(10) << "_finish_op " << *o << " aio "
-           << o->aio.read() << " " << *osr << dendl;
+  dout(10) << "_finish_op " << o->op << " " << o->get_state_name() << dendl;
+  o->lock.Lock();
+  if (o->state == Op::STATE_DONE) {
+    if (o->wal)
+      assert(_omap_set_txnseq(o->op) >= 0);
 
-  if (o->has_aio()) {
-    osr->dequeue();
-    o->put_lock();
-    osr->apply_lock.Unlock();  // locked in _do_op
-    return;
-  }
-  if (o->state != Op::STATE_ACK) {
-    Mutex::Locker l(jwa_lock);
-    if (o->state == Op::STATE_INIT) {
-      o->state = Op::STATE_WRITE;
-    } else if (o->state == Op::STATE_JOURNAL) {
-      o->state = Op::STATE_COMMIT;
-      jwa_queue.push_back(o);
-      jwa_cond.SignalOne();
+    list<Context*> to_queue;
+    o = osr->dequeue(&to_queue);
+    Op *q = osr->dequeue_inq();
+    
+    osr->qlock.Lock();
+    if (osr->empty()) {
+      osr->pending_aio_cond.Signal();
     }
-    osr->dequeue();
-    o->put_lock();
+    osr->qlock.Unlock();
+
+    // finish op by order
+    dout(5) << "_finish_op apply finish " << o->op << "/" << q->op << dendl;
+    assert(q == o);
+    
+    o->lock.Unlock();
     osr->apply_lock.Unlock();  // locked in _do_op
-    dout(10) << "_finish_op put op to jwa_queue " << *o
-             << " " << *osr << dendl;
+    
+    // called with tp lock held
+    op_queue_release_throttle(o);
+    
+    utime_t lat = ceph_clock_now(g_ceph_context);
+    lat -= o->start;
+    logger->tinc(l_xs_apply_lat, lat);
+    
+    if (o->onreadable_sync) {
+      o->onreadable_sync->complete(0);
+    }
+    if (o->onreadable) {
+      apply_finishers[osr->id % apply_finisher_num]->queue(o->onreadable);
+    }
+    if (!to_queue.empty()) {
+      apply_finishers[osr->id % apply_finisher_num]->queue(to_queue);
+    }
+    delete o;
     return;
+  } else {
+    osr->dequeue();
+    o->lock.Unlock();
+    osr->apply_lock.Unlock();  // locked in _do_op
   }
-
-  if (o->wal) {
-    int r = _omap_set_txnseq(o->op);
-    assert(r >= 0);
-  }
-
-  o->state = Op::STATE_DONE;
-  
-  list<Context*> to_queue;
-  o = osr->dequeue(&to_queue);
-  Op *q = osr->dequeue_inq();
-  
-  osr->qlock.Lock();
-  if (osr->empty()) {
-    osr->pending_aio_cond.Signal();
-  }
-  osr->qlock.Unlock();
-
-  // finish op by order
-  dout(5) << "_finish_op apply finish " << *q << " " << *o << dendl;
-  assert(q == o);
-  
-  o->put_lock();
-  osr->apply_lock.Unlock();  // locked in _do_op
-  
-  // called with tp lock held
-  op_queue_release_throttle(o);
-  
-  utime_t lat = ceph_clock_now(g_ceph_context);
-  lat -= o->start;
-  logger->tinc(l_xs_apply_lat, lat);
-  
-  if (o->onreadable_sync) {
-    o->onreadable_sync->complete(0);
-  }
-  if (o->onreadable) {
-    apply_finishers[osr->id % apply_finisher_num]->queue(o->onreadable);
-  }
-  if (!to_queue.empty()) {
-    apply_finishers[osr->id % apply_finisher_num]->queue(to_queue);
-  }
-  delete o;
 }
 
 
@@ -2276,6 +2294,8 @@ bool XStore::split_txns(Op *op, list<Transaction*>* jtls)
   }
   assert(meta_ops->op_num <= 7);
   assert(data_ops->op_num <= 7);
+  assert(data_ops->op_num >= 1);
+  assert(meta_ops->op_num >= 2);
   op->meta_ops = meta_ops;
   op->data_ops = data_ops;
   assert(jtls->empty());
@@ -2305,10 +2325,12 @@ bool XStore::init_judge_wal(list<Transaction*> &tls)
   if (!wal) {
     uint32_t not_wal_ops[] = {Transaction::OP_WRITE, Transaction::OP_SETATTRS,
       Transaction::OP_OMAP_SETKEYS};
+    uint32_t not_wal_ops_num = sizeof(not_wal_ops) / sizeof(uint32_t); 
     char* op_buffer_p = ops_bl.get_contiguous(0, ops * sizeof(Transaction::Op));
     char* op_p = op_buffer_p;
  
-    for (uint32_t i = 0, j = 0; i < ops; i++) {
+    uint32_t j = 0;
+    for (uint32_t i = 0; i < ops; i++) {
       Transaction::Op* op = reinterpret_cast<Transaction::Op*>(op_p);
       op_p += sizeof(Transaction::Op);
       if (j == 0 && op->op == Transaction::OP_SETALLOCHINT)
@@ -2317,12 +2339,15 @@ bool XStore::init_judge_wal(list<Transaction*> &tls)
         continue;
       if (j == 2 && op->op == Transaction::OP_OMAP_RMKEYS)
         continue;
-      if (j >= sizeof(not_wal_ops) / sizeof(uint32_t) ||
+      if (j >= not_wal_ops_num ||
           op->op != not_wal_ops[j]) {
         wal = true;
         break;
       }
       j++;
+    }
+    if (j != not_wal_ops_num) {
+      wal = true;
     }
   }
   
@@ -2429,7 +2454,7 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
       ops->setkeys_pos.seq = op_num;
     }
     apply_manager.op_apply_register(op_num);
-    dout(5) << "build_op " << *o << dendl;
+    dout(10) << "build_op " << *o << dendl;
 
     if (m_filestore_do_dump)
       dump_transactions(o->tls, o->op, osr);
@@ -2460,32 +2485,24 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
 
 void XStore::_journaled_written(Op *o)
 {
-  Mutex::Locker l(jwa_lock);
-  if (o->state == Op::STATE_WRITE) {
-    o->state = Op::STATE_COMMIT;
-    jwa_queue.push_back(o);
-    jwa_cond.SignalOne();
-    dout(5) << "_journaled_written put op to jwa_queue" << *o << dendl;
-  } else {
-    o->state = Op::STATE_JOURNAL;
-    dout(5) << "_journaled_written wait xstore finish" << *o << dendl;
-  }
+  Mutex::Locker l(o->lock);
+  o->journal_done = true;
+  _txn_state_proc(o);
 }
 
 void XStore::_journaled_ack_written(list<Op *> acks)
 {
   for (list<Op*>::iterator it = acks.begin(); it != acks.end(); ++it) {
-    OpSequencer *osr = (*it)->osr;
     Op *o = *it;
     assert(o->state == Op::STATE_COMMIT);
     Context *ondisk = (*it)->ondisk; 
     o->state = Op::STATE_ACK;
-
+    OpSequencer *osr = (*it)->osr;
     bool wal = o->wal;
     if (o->wal) {
-      dout(5) << __func__ << *o << " wait up " << dendl;
+      dout(10) << "_journaled_ack_written " << o->op << " wait up " << dendl;
     } else {
-      dout(5) << __func__ << *o << dendl;
+      dout(10) << "_journaled_ack_written " << o->op << dendl;
     }
     // this should queue in order because the journal does it's completions in order.
     queue_op(osr, o);
@@ -2525,8 +2542,6 @@ int XStore::_do_transactions(
        p != tls.end();
        ++p, trans_num++) {
     r = _do_transaction(**p, op_seq, trans_num, o, handle);
-    if (o && o->state != Op::STATE_ACK)
-      break;
     if (r < 0)
       break;
     if (handle)

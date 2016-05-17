@@ -371,6 +371,8 @@ public:
     uint64_t ops, bytes;
     TrackedOpRef osd_op;
     bool wal;
+    bool data_done;
+    bool journal_done;
     OpSequencer *osr;
     enum apply_state {
       STATE_INIT     = 0,
@@ -384,7 +386,8 @@ public:
     list<bufferptr> aio_bl;
     Mutex lock;
 
-    Op() : data_ops(NULL), meta_ops(NULL), lock("Op::lock") {}
+    Op() : data_ops(NULL), meta_ops(NULL), data_done(false),
+           journal_done(false), lock("Op::lock") {}
     bool has_aio() {
       assert(lock.is_locked());
       return aio.read() > 0;
@@ -396,6 +399,18 @@ public:
       lock.Unlock();
     }
 
+    const char *get_state_name() {
+      switch (state) {
+      case STATE_INIT: return "init";
+      case STATE_WRITE: return "write";
+      case STATE_JOURNAL: return "journal";
+      case STATE_COMMIT: return "commit";
+      case STATE_ACK: return "ack";
+      case STATE_DONE: return "done";
+      }
+      return "???";
+    }
+ 
     ~Op() {
       delete data_ops;
       delete meta_ops;
@@ -414,11 +429,10 @@ public:
 
   friend ostream& operator<<(ostream& out, const Op& o)
   {
-    out << " " << &o << " seq " << o.op << " ondisk " << o.ondisk
-        << " osr " << *(o.osr) << "/" << o.osr->parent << " wal " << o.wal;
+    out << &o << " seq " << o.op << " aio " << o.aio.read() << " "
+        << *(o.osr) << "/" << o.osr->parent << " wal " << o.wal;
     if (o.osd_op)
       out << " op " << o.osd_op;
-    out << " ";
     return out;
   }
 
@@ -652,7 +666,7 @@ public:
 	       Context *ondisk, Context *onreadable, Context *onreadable_sync,
 	       TrackedOpRef osd_op,
                OpSequencer *osr);
-  void aio_callback(AioArgs *args);
+  void _txn_aio_finish(AioArgs *args);
   void queue_op(OpSequencer *osr, Op *o);
   void op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle = NULL);
   void op_queue_release_throttle(Op *o);
@@ -749,6 +763,7 @@ public:
     Transaction& t, uint64_t op_seq, int trans_num, Op *o,
     ThreadPool::TPHandle *handle);
 
+  void _txn_state_proc(Op *o);
   unsigned _do_data_txn(Op *op, ThreadPool::TPHandle *handle);
   unsigned _do_meta_txn(Op *op, ThreadPool::TPHandle *handle);
   void _do_txn_error_proc(int r, Transaction::Op *op, Op *o, SequencerPosition *spos = NULL);
