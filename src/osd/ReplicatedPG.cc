@@ -1906,7 +1906,8 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
   MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
   const object_locator_t& oloc = m->get_object_locator();
 
-  if (must_promote || op->need_promote()) {
+  if (must_promote || (op->need_promote()
+      && pool.info.cache_mode != pg_pool_t::CACHEMODE_FORWARD)) {
     promote_object(obc, missing_oid, oloc, op);
     return true;
   }
