@@ -1970,13 +1970,15 @@ struct C_JournaledWritten : public Context {
 
 struct C_JournaledAckWritten : public Context {
   XStore *fs;
+  XStore::Op *o;
   list<XStore::Op *> acks;
 
-  C_JournaledAckWritten(XStore *f, list<XStore::Op *> opq): fs(f) {
+  C_JournaledAckWritten(XStore *f, XStore::Op *o,  list<XStore::Op *> opq): fs(f), o(o) {
     acks.swap(opq);
   }
   void finish(int r) {
     fs->_journaled_ack_written(acks);
+    delete o;
   }
 };
 
@@ -2032,9 +2034,8 @@ void XStore::_jwa_entry()
       logger->inc(l_xs_ack_entry, jwa_opq.size());
       logger->inc(l_xs_ack_commit);
 
-      Context *ondisk = new C_JournaledAckWritten(this, jwa_opq);
-      Op *o = build_op(tls, NULL,
-                       NULL, NULL, TrackedOpRef(), NULL);
+      Op *o = build_op(tls, NULL, NULL, NULL, TrackedOpRef(), NULL);
+      Context *ondisk = new C_JournaledAckWritten(this, o, jwa_opq);
       bufferlist tbl;
       int orig_len = journal->prepare_ack_entry(bl, tbl);
       uint64_t op_num = submit_manager.op_submit_start();
