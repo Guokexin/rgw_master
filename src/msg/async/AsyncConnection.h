@@ -117,6 +117,7 @@ class AsyncConnection : public Connection {
     }
     return m;
   }
+  void reset_recv_state();
 
  public:
   AsyncConnection(CephContext *cct, AsyncMessenger *m, DispatchQueue *q, EventCenter *c, PerfCounters *p);
@@ -313,10 +314,11 @@ class AsyncConnection : public Connection {
   void local_deliver();
   void stop() {
     lock.Lock();
-    if (state != STATE_CLOSED)
-      dispatch_queue->queue_reset(this);
+    bool need_queue_reset = (state != STATE_CLOSED);
     lock.Unlock();
     mark_down();
+    if (need_queue_reset)
+      dispatch_queue->queue_reset(this);
   }
   void cleanup_handler() {
     delete read_handler;
