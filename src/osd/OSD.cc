@@ -9024,3 +9024,21 @@ void OSD::adjust_recovery_throttle()
     }
   }
 }
+
+void OSD::remove_throttled_recoveries(PG *pg)
+{
+  dout(20) << __func__ << dendl;
+  rec_throttle_lock.Lock();
+  list<boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> >::iterator it = throttled_recs.begin();
+  while (it != throttled_recs.end()) {
+    ReplicatedPG *_pg = dynamic_cast<ReplicatedPG*>(boost::get<0>(*it));
+    if (_pg == pg) {
+      PGBackend::RecoveryHandle *rec_handle = boost::get<1>(*it);
+      throttled_recs.erase(it++);
+      delete rec_handle;
+    } else {
+      ++it;
+    }
+  }
+  rec_throttle_lock.Unlock();
+}
