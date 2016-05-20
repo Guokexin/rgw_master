@@ -1915,6 +1915,7 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
   bool can_proxy_read = get_osdmap()->get_up_osd_features() &
     CEPH_FEATURE_OSD_PROXY_FEATURES;
   OpRequestRef promote_op;
+  bool did_proxy_read = false;
 
   switch (pool.info.cache_mode) {
   case pg_pool_t::CACHEMODE_WRITEBACK:
@@ -1942,10 +1943,12 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
       return true;
     }
 
-    if (can_proxy_read)
+    if (can_proxy_read) {
       do_proxy_read(op);
-    else
+      did_proxy_read = true;
+    } else {
       promote_op = op;   // for non-proxy case promote_object needs this
+    }
 
     // Avoid duplicate promotion
     if (obc.get() && obc->is_blocked()) {
@@ -1987,7 +1990,7 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
 	promote_object(obc, missing_oid, oloc, promote_op);
       } else {
 	// not promoting
-	return false;
+	return did_proxy_read;
       }
       break;
     }
