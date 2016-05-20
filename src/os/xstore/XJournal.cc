@@ -1606,18 +1606,17 @@ int XJournal::prepare_ack_entry(bufferlist &bl, bufferlist &tbl)
    unsigned head_size = sizeof(entry_header_t);
    off64_t base_size = 2*head_size + bl.length();
    off64_t size = ROUND_UP_TO(base_size + h.pre_pad, header.alignment);
-   unsigned post_pad = size - base_size - h.pre_pad;
    h.len = bl.length();
-   h.post_pad = post_pad;
-   h.crc32c = bl.crc32c(0);
+   if (need_entry_crc()) {
+     h.crc32c = bl.crc32c(0);
+   } else {
+     h.crc32c = 0;
+   }
    assert(!tbl.length());
    // header
    tbl.append((const char*)&h, sizeof(h));
    // payload
    tbl.claim_append(bl);
-   if (h.post_pad) {
-     tbl.push_back(buffer::create_static(h.post_pad, zero_buf));
-   }
    // footer
    tbl.append((const char*)&h, sizeof(h));
    tbl.rebuild_page_aligned();
