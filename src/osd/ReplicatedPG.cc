@@ -2525,6 +2525,11 @@ void ReplicatedPG::log_op_stats(OpContext *ctx)
   osd->logger->inc(l_osd_op_outb, outb);
   osd->logger->inc(l_osd_op_inb, inb);
   osd->logger->tinc(l_osd_op_lat, latency);
+  if (ctx->op->get_enqueued_stamp() != utime_t()) {
+    utime_t enqueued_latency = ctx->op->get_dequeued_time() -
+      ctx->op->get_enqueued_stamp();
+    osd->logger->tinc(l_osd_op_queue_lat, enqueued_latency);
+  }
   osd->logger->tinc(l_osd_op_process_lat, process_latency);
 
   if (op->may_read() && op->may_write()) {

@@ -305,6 +305,10 @@ void PerfCounters::dump_formatted(Formatter *f, bool schema,
 	  f->dump_format_unquoted("sum", "%" PRId64 ".%09" PRId64,
 				  a.first / 1000000000ull,
 				  a.first % 1000000000ull);
+          if (a.second)
+	    f->dump_unsigned("avg_us", (unsigned)(a.first / (1000 * a.second)));
+          else
+	    f->dump_unsigned("avg_us", 0);
 	} else {
 	  assert(0);
 	}

@@ -1625,6 +1625,7 @@ int XJournal::prepare_ack_entry(bufferlist &bl, bufferlist &tbl)
 void XJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
 			       Context *oncommit, TrackedOpRef osd_op)
 {
+  utime_t start = ceph_clock_now(NULL);
   // dump on queue
   dout(5) << "submit_entry seq " << seq
 	  << " len " << e.length()
@@ -1652,6 +1653,7 @@ void XJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
       writeq_cond.Signal();
     writeq.push_back(write_item(seq, e, orig_len, osd_op));
   }
+  logger->tinc(l_xs_submit_entry_lat, ceph_clock_now(NULL) - start);
 }
 
 bool XJournal::writeq_empty()

@@ -83,6 +83,11 @@ enum {
   l_xs_wal_op,
   l_xs_ack_entry,
   l_xs_ack_commit,
+  l_xs_ack_commit_lat,
+  l_xs_submit_entry_lat,
+  l_xs_mscache_aio_lat,
+  l_xs_xstore_op_summit_lat,
+  l_xs_xstore_op_queue_lat,
   l_xs_last,
 };
 class XStore : public XJournalingObjectStore,
@@ -277,6 +282,7 @@ private:
 
   // sync thread
   Mutex lock;
+  Mutex apply_lock;
   bool force_sync;
   Cond sync_cond;
 
@@ -417,14 +423,21 @@ public:
     }
   };
 
-  struct AioArgs {
-    XStore *fs;
+  struct C_AioArgs : public Context {
+    XStore *store;
     Op *op;
     OpSequencer *osr;
     FDRef fd;
     bool truncate;
-    AioArgs(XStore *fs, Op *op, OpSequencer *osr, FDRef& fd, bool tr):
-      fs(fs), op(op), osr(osr), fd(fd), truncate(tr) {}
+    utime_t start;
+    C_AioArgs(XStore *fs, Op *op, OpSequencer *osr, FDRef& fd, bool tr):
+      store(fs), op(op), osr(osr), fd(fd), truncate(tr) {
+      start = ceph_clock_now(NULL);
+    }
+
+    void finish(int r) {
+      store->_txn_aio_finish(this);
+    }
   };
 
   friend ostream& operator<<(ostream& out, const Op& o)
@@ -520,17 +533,17 @@ public:
       cond.Signal();
       _wake_flush_waiters(to_queue);
     }
-    void queue(Op *o) {
+    void queue(Op *o, bool first) {
       Mutex::Locker l(qlock);
-      q.push_back(o);
+        q.push_back(o);
+      if (first) {
+        jq.push_back(o->op);
+        in_q.push_back(o);
+      }
     }
     Op *peek_queue() {
       assert(apply_lock.is_locked());
       return q.front();
-    }
-    void queue_inq(Op *o) {
-      Mutex::Locker l(qlock);
-      in_q.push_back(o);
     }
     list<Op*> *get_inq() {
       assert(qlock.is_locked());
@@ -650,24 +663,21 @@ public:
       return osr;
     }
     void _process(OpSequencer *osr, ThreadPool::TPHandle &handle) {
-      store->_do_op(osr, handle);
-    }
-    void _process_finish(OpSequencer *osr) {
-      store->_finish_op(osr);
+      store->_txn_io_proc(osr, handle);
     }
     void _clear() {
       assert(store->op_queue.empty());
     }
   } op_wq;
 
-  void _do_op(OpSequencer *o, ThreadPool::TPHandle &handle);
-  void _finish_op(OpSequencer *o);
+  void _txn_io_proc(OpSequencer *o, ThreadPool::TPHandle &handle);
+  void _txn_io_finish(OpSequencer *osr, Op *o);
   Op *build_op(list<Transaction*>& tls,
 	       Context *ondisk, Context *onreadable, Context *onreadable_sync,
 	       TrackedOpRef osd_op,
                OpSequencer *osr);
-  void _txn_aio_finish(AioArgs *args);
-  void queue_op(OpSequencer *osr, Op *o);
+  void _txn_aio_finish(C_AioArgs *args);
+  void queue_op(OpSequencer *osr, Op *o, bool first);
   void op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle = NULL);
   void op_queue_release_throttle(Op *o);
   void _journaled_written(Op *o);
@@ -764,8 +774,8 @@ public:
     ThreadPool::TPHandle *handle);
 
   void _txn_state_proc(Op *o);
-  unsigned _do_data_txn(Op *op, ThreadPool::TPHandle *handle);
-  unsigned _do_meta_txn(Op *op, ThreadPool::TPHandle *handle);
+  int _do_data_txn(Op *op, ThreadPool::TPHandle *handle);
+  int _do_meta_txn(Op *op, ThreadPool::TPHandle *handle);
   void _do_txn_error_proc(int r, Transaction::Op *op, Op *o, SequencerPosition *spos = NULL);
   int queue_transactions(Sequencer *osr, list<Transaction*>& tls,
 			 TrackedOpRef op = TrackedOpRef(),

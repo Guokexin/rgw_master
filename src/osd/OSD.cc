@@ -2134,6 +2134,7 @@ void OSD::create_logger()
   osd_plb.add_u64_counter(l_osd_op_inb,   "op_in_bytes");       // client op in bytes (writes)
   osd_plb.add_u64_counter(l_osd_op_outb,  "op_out_bytes");      // client op out bytes (reads)
   osd_plb.add_time_avg(l_osd_op_lat,   "op_latency");       // client op latency
+  osd_plb.add_time_avg(l_osd_op_queue_lat, "op_queue_latency");   // client op osd queue latency
   osd_plb.add_time_avg(l_osd_op_process_lat, "op_process_latency");   // client op process latency
   osd_plb.add_time_avg(l_osd_op_prepare_lat, "op_prepare_latency");   // client op prepare latency
 
@@ -8367,6 +8368,7 @@ bool OSD::op_is_discardable(MOSDOp *op)
 
 void OSD::enqueue_op(PG *pg, OpRequestRef& op)
 {
+  op->set_enqueued_stamp(ceph_clock_now(cct));
   utime_t latency = ceph_clock_now(cct) - op->get_req()->get_recv_stamp();
   dout(15) << "enqueue_op " << op << " prio " << op->get_req()->get_priority()
 	   << " cost " << op->get_req()->get_cost()

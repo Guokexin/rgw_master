@@ -57,7 +57,7 @@
 #include "osd/osd_types.h"
 #include "include/color.h"
 #include "include/buffer.h"
-
+#include "common/io_priority.h"
 #include "common/Timer.h"
 #include "common/debug.h"
 #include "common/errno.h"
@@ -119,22 +119,13 @@ static CompatSet get_fs_supported_compat_set() {
   return compat;
 }
 
-struct C_AioCallBack : public Context {
-  void* args;
-  C_AioCallBack(void *args): args(args) {}
-
-  void finish(int r) {
-    // FIXME
-    XStore::AioArgs *aioargs = static_cast<XStore::AioArgs*>(args);
-    XStore *store = aioargs->fs;
-    store->_txn_aio_finish(aioargs);
-  }
-};
-
 void aio_cache_cb(void* args)
 {
-  XStore *store = ((XStore::AioArgs*)args)->fs;
-  store->callback_finisher->queue(new C_AioCallBack(args));
+  XStore::C_AioArgs *cb_args = (XStore::C_AioArgs*)args;
+  XStore *store = cb_args->store;
+  XStore::OpSequencer *osr= cb_args->osr;
+  store->logger->tinc(l_xs_mscache_aio_lat, ceph_clock_now(NULL) - cb_args->start);
+  store->callback_finisher->queue(cb_args);
 }
 
 int XStore::peek_journal_fsid(uuid_d *fsid)
@@ -585,6 +576,7 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   m_enable_mscache(g_conf->xstore_mscache_enable),
   m_enable_mscache_aio(m_enable_mscache && g_conf->xstore_mscache_aio_enable),
   lock("XStore::lock"),
+  apply_lock("XStore:apply_lock"),
   force_sync(false), 
   sync_entry_timeo_lock("sync_entry_timeo_lock"),
   timer(g_ceph_context, sync_entry_timeo_lock),
@@ -679,10 +671,14 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   plb.add_u64_counter(l_xs_fdcache, "fdcache");
   plb.add_u64_counter(l_xs_fdcache_hit, "fdcache_hit");
   plb.add_u64_counter(l_xs_wal_op, "op_wal");
-  plb.add_u64_counter(l_xs_ack_entry, "ack_entry");
-  plb.add_u64_counter(l_xs_ack_commit, "ack_commit");
+  plb.add_u64_counter(l_xs_ack_entry, "xstore_ack_entry");
+  plb.add_u64_counter(l_xs_ack_commit, "xstore_ack_commit");
+  plb.add_time_avg(l_xs_ack_commit_lat, "xstore_ack_commit_lat");
+  plb.add_time_avg(l_xs_mscache_aio_lat, "xstore_mscache_aio_lat");
+  plb.add_time_avg(l_xs_xstore_op_summit_lat, "xstore_op_submit_lat");
+  plb.add_time_avg(l_xs_xstore_op_queue_lat, "xstore_op_queue_lat");
   plb.add_u64(l_xs_committing, "committing");
-
+  plb.add_time_avg(l_xs_submit_entry_lat, "submit_entry_lat");
   plb.add_u64_counter(l_xs_commit, "commitcycle");
   plb.add_time_avg(l_xs_commit_len, "commitcycle_interval");
   plb.add_time_avg(l_xs_commit_lat, "commitcycle_latency");
@@ -1739,23 +1735,27 @@ XStore::Op *XStore::build_op(list<Transaction*>& tls,
 
 
 
-void XStore::queue_op(OpSequencer *osr, Op *o)
+void XStore::queue_op(OpSequencer *osr, Op *o, bool first)
 {
   // queue op on sequencer, then queue sequencer for the threadpool,
   // so that regardless of which order the threads pick up the
   // sequencer, the op order will be preserved.
 
-  osr->queue(o);
+  utime_t start = ceph_clock_now(NULL);
+  osr->queue(o, first);
 
-  logger->inc(l_xs_ops);
-  logger->inc(l_xs_bytes, o->bytes);
-
-  dout(5) << "queue_op " << o << " seq " << o->op
-	  << " " << *osr
-	  << " " << o->bytes << " bytes"
-	  << " (queue has " << op_queue_len << " ops and " << op_queue_bytes << " bytes)"
-	  << dendl;
+  if (first) {
+    logger->inc(l_xs_ops);
+    logger->inc(l_xs_bytes, o->bytes);
+  
+    dout(5) << "queue_op " << o << " seq " << o->op
+            << " " << *osr
+            << " " << o->bytes << " bytes"
+            << " (queue has " << op_queue_len << " ops and " << op_queue_bytes << " bytes)"
+            << dendl;
+  }
   op_wq.queue(osr);
+  logger->tinc(l_xs_xstore_op_queue_lat, ceph_clock_now(NULL) - start);
 }
 
 void XStore::op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle)
@@ -1860,7 +1860,7 @@ out:
   dout(15) << "_txn_state_proc " << o->op << " s = " << o->get_state_name() << dendl;
 }
 
-void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
+void XStore::_txn_io_proc(OpSequencer *osr, ThreadPool::TPHandle &handle)
 {  
   // inject a stall?
   if (g_conf->filestore_inject_stall) {
@@ -1874,42 +1874,43 @@ void XStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 
   osr->apply_lock.Lock();
   Op *o = osr->peek_queue();
-
   dout(10) << "_do_op " << *o << " " << o->get_state_name() << dendl;
-  Mutex::Locker l(o->lock);
-  int r = 0;
+  o->lock.Lock();
   switch(o->state) {
   case Op::STATE_INIT:
   case Op::STATE_JOURNAL:
     apply_manager.op_apply_start(o->op);
     if (!o->wal) {
-      r = _do_data_txn(o, &handle);
+      _do_data_txn(o, &handle);
     } else {
       dout(10) << "_do_op skip " << o->op << dendl;
     }
     if (!o->has_aio())
       o->data_done = true;
     _txn_state_proc(o);
-    break;
+    osr->dequeue();
+    o->lock.Unlock();
+    osr->apply_lock.Unlock();
+    return;
   
   case Op::STATE_ACK:
     if (!o->wal) {
-      r = _do_meta_txn(o, &handle);
+      _do_meta_txn(o, &handle);
     } else {
-      r = _do_transactions(o->tls, o->op, o, &handle);
+      _do_transactions(o->tls, o->op, o, &handle);
     }
     apply_manager.op_apply_finish(o->op);
     o->state = Op::STATE_DONE;
+    _txn_io_finish(osr, o);
+    delete o;
     break;
 
   default:
     assert(false);
   }
-  dout(10) << "_do_op " << o->op << " " << o->get_state_name() << " r = " << r
-           << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
 }
 
-unsigned XStore::_do_data_txn(Op *ops, ThreadPool::TPHandle *handle)
+int XStore::_do_data_txn(Op *ops, ThreadPool::TPHandle *handle)
 {
   dout(10) << "_do_data_txn " << ops->op << " " << ops->get_state_name() << dendl;
   int r = 0;
@@ -1950,10 +1951,11 @@ unsigned XStore::_do_data_txn(Op *ops, ThreadPool::TPHandle *handle)
     if (r < 0)
       _do_txn_error_proc(r, op, ops);
   }
-  return 0;
+  dout(15) << "_do_data_txn " << ops->op << " = " << r << dendl;
+  return r;
 }
 
-unsigned XStore::_do_meta_txn(Op *ops, ThreadPool::TPHandle *handle)
+int XStore::_do_meta_txn(Op *ops, ThreadPool::TPHandle *handle)
 {
   dout(10) << "_do_meta_txn " << ops->op << " " << ops->get_state_name() << dendl;
   int r = 0;
@@ -1993,10 +1995,11 @@ unsigned XStore::_do_meta_txn(Op *ops, ThreadPool::TPHandle *handle)
     if (r < 0)
       _do_txn_error_proc(r, op, ops);
   }
-  return 0;
+  dout(10) << "_do_meta_txn " << ops->op << "  = " << r << dendl;
+  return r;
 }
 
-void XStore::_txn_aio_finish(AioArgs *args)
+void XStore::_txn_aio_finish(C_AioArgs *args)
 {
   if (!m_enable_mscache_aio)
     assert(0 == "MSCACHE IS TURN OFF");
@@ -2015,35 +2018,30 @@ void XStore::_txn_aio_finish(AioArgs *args)
   assert(o->aio.dec() == 0);
   o->data_done = true;
   _txn_state_proc(o);
-  delete args;
 }
 
-void XStore::_finish_op(OpSequencer *osr)
+void XStore::_txn_io_finish(OpSequencer *osr, Op *o)
 {
-  Op *o = osr->peek_queue();
   dout(10) << "_finish_op " << o->op << " " << o->get_state_name() << dendl;
-  o->lock.Lock();
-  if (o->state == Op::STATE_DONE) {
-    if (o->wal)
-      assert(_omap_set_txnseq(o->op) >= 0);
+  if (o->wal)
+    assert(_omap_set_txnseq(o->op) >= 0);
 
-    list<Context*> to_queue;
-    o = osr->dequeue(&to_queue);
-    Op *q = osr->dequeue_inq();
-    
-    osr->qlock.Lock();
-    if (osr->empty()) {
-      osr->pending_aio_cond.Signal();
-    }
-    osr->qlock.Unlock();
-
-    // finish op by order
-    dout(5) << "_finish_op apply finish " << o->op << "/" << q->op << dendl;
-    assert(q == o);
-    
-    o->lock.Unlock();
-    osr->apply_lock.Unlock();  // locked in _do_op
-    
+  list<Context*> to_queue;
+  o = osr->dequeue(&to_queue);
+  Op *q = osr->dequeue_inq();
+  
+  osr->qlock.Lock();
+  if (osr->empty()) {
+    osr->pending_aio_cond.Signal();
+  }
+  osr->qlock.Unlock();
+  // finish op by order
+  dout(5) << "_finish_op apply finish " << o->op << "/" << q->op << dendl;
+  assert(q == o);
+  o->lock.Unlock();
+  {
+    Mutex::Locker l(apply_lock);
+    osr->apply_lock.Unlock();
     // called with tp lock held
     op_queue_release_throttle(o);
     
@@ -2060,12 +2058,6 @@ void XStore::_finish_op(OpSequencer *osr)
     if (!to_queue.empty()) {
       apply_finishers[osr->id % apply_finisher_num]->queue(to_queue);
     }
-    delete o;
-    return;
-  } else {
-    osr->dequeue();
-    o->lock.Unlock();
-    osr->apply_lock.Unlock();  // locked in _do_op
   }
 }
 
@@ -2096,7 +2088,7 @@ struct C_JournaledAckWritten : public Context {
 
 void XStore::_jwa_entry()
 {
-  dout(10) << __func__ << " start" << dendl;
+  dout(1) << __func__ << " start, pid " << ceph_gettid() << dendl;
   list<Transaction*> tls;
   jwa_lock.Lock();
   while (true) {
@@ -2106,7 +2098,9 @@ void XStore::_jwa_entry()
       dout(20) << __func__ << " sleep" << dendl;
       jwa_cond.Wait(jwa_lock); 
       dout(20) << __func__ << " wake" << dendl;
+      continue;
     } else {
+      utime_t start = ceph_clock_now(NULL);
       list<Op*> jwa_opq;
       __u32 index = 0;
       if (jwa_queue.size() <= m_xstore_max_commit_entries) {
@@ -2145,20 +2139,22 @@ void XStore::_jwa_entry()
 
       logger->inc(l_xs_ack_entry, jwa_opq.size());
       logger->inc(l_xs_ack_commit);
-
       Op *o = build_op(tls, NULL, NULL, NULL, TrackedOpRef(), NULL);
       Context *ondisk = new C_JournaledAckWritten(this, o, jwa_opq);
       bufferlist tbl;
       int orig_len = journal->prepare_ack_entry(bl, tbl);
+
       uint64_t op_num = submit_manager.op_submit_start();
       o->op = op_num;
       o->osr = NULL;
 
-      ostringstream oss;
-      for (uint32_t i = 0; i < index; i++) {
-        oss << jwa_seq[i] << " ";
+      if (g_conf->subsys.should_gather(ceph_subsys_xstore, 20)) {
+        ostringstream oss;
+        for (uint32_t i = 0; i < index; i++) {
+          oss << jwa_seq[i] << " ";
+        }
+        dout(20) << __func__ << " seq " << op_num << " ack seq " << oss.str() << dendl;
       }
-      dout(20) << __func__ << " seq " << op_num << " ack seq " << oss.str() << dendl;
 
       // FIXME osr->queue_journal(o->op);
       if (journal && journal->is_writeable()) {
@@ -2167,6 +2163,7 @@ void XStore::_jwa_entry()
       } else {
         assert(0 == "Unexpected IO PATH");
       }
+      logger->tinc(l_xs_ack_commit_lat, ceph_clock_now(NULL) - start);
       jwa_lock.Lock();
     }
   }
@@ -2445,7 +2442,10 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
       }
       delete jtls;
     }
+    dout(10) << "build_op " << *o << dendl;
+    C_JournaledWritten *jw = new C_JournaledWritten(this, o);
     uint64_t op_num = submit_manager.op_submit_start();
+    utime_t start = ceph_clock_now(NULL);
     o->op = op_num;
     if (!o->wal) {
       MetaOps *ops = o->meta_ops;
@@ -2453,30 +2453,16 @@ int XStore::queue_transactions(Sequencer *posr, list<Transaction*> &tls,
       ops->rmkeys_pos.seq = op_num;
       ops->setkeys_pos.seq = op_num;
     }
-    apply_manager.op_apply_register(op_num);
-    dout(10) << "build_op " << *o << dendl;
 
     if (m_filestore_do_dump)
       dump_transactions(o->tls, o->op, osr);
 
-    osr->queue_inq(o);
-    if (o->wal) {
-      o->state = Op::STATE_INIT;
-      osr->queue_journal(o->op);
-      _op_journal_transactions(tbl, orig_len, o->op,
-                               new C_JournaledWritten(this, o),
-                               osd_op);
-      queue_op(osr, o);
-    } else {
-      o->state = Op::STATE_INIT;
-      osr->queue_journal(o->op);
-      _op_journal_transactions(tbl, orig_len, o->op,
-                               new C_JournaledWritten(this, o),
-                               osd_op);
-      queue_op(osr, o);
-    }
-    
+    o->state = Op::STATE_INIT;
+    _op_journal_transactions(tbl, orig_len, o->op, jw, osd_op);
+    logger->tinc(l_xs_xstore_op_summit_lat, ceph_clock_now(NULL) - start);
     submit_manager.op_submit_finish(op_num);
+    apply_manager.op_apply_register(op_num);
+    queue_op(osr, o, true);
     return 0;
   }
 
@@ -2505,7 +2491,7 @@ void XStore::_journaled_ack_written(list<Op *> acks)
       dout(10) << "_journaled_ack_written " << o->op << dendl;
     }
     // this should queue in order because the journal does it's completions in order.
-    queue_op(osr, o);
+    queue_op(osr, o, false);
 
     if (wal) {
       osr->pending_lock.Lock();
@@ -2547,7 +2533,8 @@ int XStore::_do_transactions(
     if (handle)
       handle->reset_tp_timeout();
   }
-  
+  if (o)
+    dout(20) << "_do_transactions " << *o <<  " = " << r << dendl;
   return r;
 }
 
@@ -3538,7 +3525,7 @@ int XStore::direct_write(
         }
         // maybe async write
         got = mscache_write(fd, oss.str().c_str(), write_ptr.c_str(), w_len, w_off,
-          (m_enable_mscache_aio? new AioArgs(this, op, osr, fd, f_len > 0 ) : NULL),
+          (m_enable_mscache_aio? new C_AioArgs(this, op, osr, fd, f_len > 0 ) : NULL),
           (m_enable_mscache_aio? MSCACHE_WRITE_API_ASYNC : MSCACHE_WRITE_API_SYNC),
           (f_len? MSCACHE_WRITE_HINT_TRUNCATE : 0),
           f_len);
@@ -3601,7 +3588,7 @@ int XStore::direct_write(
           fd->aio.inc();
         }
         got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
-          (m_enable_mscache_aio? new AioArgs(this, op, osr, fd, 0) : NULL),
+          (m_enable_mscache_aio? new C_AioArgs(this, op, osr, fd, 0) : NULL),
           (m_enable_mscache_aio? MSCACHE_WRITE_API_ASYNC : MSCACHE_WRITE_API_SYNC),
           0, 0);
       } else {
