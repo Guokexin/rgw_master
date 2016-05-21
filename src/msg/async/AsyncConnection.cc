@@ -1771,6 +1771,7 @@ ssize_t AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlis
     // Clean up output buffer
     existing->outcoming_bl.clear();
     existing->requeue_sent();
+    existing->reset_recv_state();
 
     swap(existing->sd, sd);
     existing->can_write = NOWRITE;
