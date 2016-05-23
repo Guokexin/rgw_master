@@ -2557,7 +2557,7 @@ void ReplicatedBackend::send_single_push(
       i->first.osd,
       get_osdmap()->get_epoch());
     if (!con) {
-      ++i;
+      pushes.erase(i++);
       continue;
     }
     assert(!i->second.empty());
@@ -2586,7 +2586,7 @@ void ReplicatedBackend::send_single_pull(
       i->first.osd,
       get_osdmap()->get_epoch());
     if (!con) {
-      ++i;
+      pulls.erase(i++);
       continue;
     }
     assert(!i->second.empty());
