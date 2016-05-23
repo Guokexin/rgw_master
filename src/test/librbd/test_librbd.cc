@@ -40,6 +40,8 @@
 #include "test/librados/test.h"
 #include "test/librbd/test_support.h"
 #include "common/errno.h"
+#include "common/Mutex.h"
+#include "common/Cond.h"
 #include "include/interval_set.h"
 #include "include/stringify.h"
 
@@ -3081,4 +3083,79 @@ TEST_F(TestLibRBD, FlushEmptyOpsOnExternalSnapshot) {
   image2.aio_read(0, 1024, read_bl, read_comp);
   ASSERT_EQ(0, read_comp->wait_for_complete());
   read_comp->release();
+}
+
+struct SharedComplQueue {
+  Mutex lock;
+  std::list<void*> queue;
+  Cond cond;
+  SharedComplQueue(): lock("test_librbd::SharedComplQueue") {}
+};
+
+void compl_recycle(rbd_completion_t cb, void *arg)
+{
+  printf("completion recycle cb called!\n");
+
+  SharedComplQueue *p = static_cast<SharedComplQueue*>(arg);
+  Mutex::Locker l(p->lock);
+  p->queue.push_back(cb);
+  p->cond.Signal();
+}
+
+TEST_F(TestLibRBD, ResetCompletion)
+{
+  rados_ioctx_t ioctx;
+  rados_ioctx_create(_cluster, m_pool_name.c_str(), &ioctx);
+
+  rbd_image_t image;
+  int order = 0;
+  std::string name = get_temp_image_name();
+  uint64_t size = 2 << 20;
+  size_t num_aios = 256;
+
+  ASSERT_EQ(0, create_image(ioctx, name.c_str(), size, &order));
+  ASSERT_EQ(0, rbd_open(ioctx, name.c_str(), &image, NULL));
+
+  char test_data[TEST_IO_SIZE + 1];
+  size_t i;
+  for (i = 0; i < TEST_IO_SIZE; ++i) {
+    test_data[i] = (char) (rand() % (126 - 33) + 33);
+  }
+
+  rbd_completion_t write_comps[num_aios];
+  SharedComplQueue queue;
+  for (i = 0; i < num_aios; ++i) {
+    ASSERT_EQ(0, rbd_aio_create_completion((void*)&queue, (rbd_callback_t) compl_recycle, &write_comps[i]));
+    queue.queue.push_back(write_comps[i]);
+  }
+
+  for (i = 0; i < 2048; ++i) {
+    Mutex::Locker l(queue.lock);
+    if (queue.queue.empty())
+      queue.cond.Wait(queue.lock);
+    rbd_completion_t comp = queue.queue.front();
+    queue.queue.pop_front();
+    uint64_t offset = rand() % (size - TEST_IO_SIZE);
+    rbd_aio_reset(comp);
+    ASSERT_EQ(0, rbd_aio_write(image, offset, TEST_IO_SIZE, test_data, comp));
+  }
+
+  rbd_completion_t flush_comp;
+  ASSERT_EQ(0, rbd_aio_create_completion(NULL, NULL, &flush_comp));
+  ASSERT_EQ(0, rbd_aio_flush(image, flush_comp));
+  ASSERT_EQ(0, rbd_aio_wait_for_complete(flush_comp));
+  ASSERT_EQ(1, rbd_aio_is_complete(flush_comp));
+  rbd_aio_release(flush_comp);
+
+  ASSERT_EQ(queue.queue.size(), num_aios);
+
+  for (i = 0; i < num_aios; ++i) {
+    ASSERT_EQ(1, rbd_aio_is_complete(write_comps[i]));
+    rbd_aio_release(write_comps[i]);
+  }
+
+  ASSERT_PASSED(validate_object_map, image);
+  ASSERT_EQ(0, rbd_close(image));
+  ASSERT_EQ(0, rbd_remove(ioctx, name.c_str()));
+  rados_ioctx_destroy(ioctx);
 }
