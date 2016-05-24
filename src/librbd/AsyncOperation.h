@@ -32,6 +32,10 @@ public:
 
   void start_op(ImageCtx &image_ctx);
   void finish_op();
+  void reset() {
+    assert(!m_xlist_item.is_on_list() && m_flush_contexts.empty());
+    m_image_ctx = NULL;
+  }
 
   void add_flush_context(Context *on_finish);
 
