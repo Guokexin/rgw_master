@@ -550,6 +550,7 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   m_enable_mscache_aio(m_enable_mscache && g_conf->xstore_mscache_aio_enable),
   lock("XStore::lock"),
   apply_lock("XStore:apply_lock"),
+  store_aio_lock("XStore:aio_lock"),
   force_sync(false), 
   sync_entry_timeo_lock("sync_entry_timeo_lock"),
   timer(g_ceph_context, sync_entry_timeo_lock),
@@ -557,6 +558,8 @@ XStore::XStore(const std::string &base, const std::string &jdev, osflagbits_t fl
   jwa_lock("XStore::jwa_lock"),
   jwa_stop(false),
   m_xstore_max_commit_entries(g_conf->xstore_max_commit_entries),
+  jwa_draining(0),
+  jwa_processing(false),
   jwa_thread(this),
   fdcache(g_ceph_context),
   default_osr("default"),
@@ -1617,13 +1620,22 @@ int XStore::umount()
   lock.Unlock();
   sync_thread.join();
 
+  op_tp.stop();
+
+  // wait all aio finish
+  store_aio_lock.Lock();
+  while (store_aio_inflight.read()) {
+    store_aio_cond.Wait(store_aio_lock);
+  }
+  store_aio_lock.Unlock();
+  callback_finisher->stop();
+
+  // wait ack queue empty
   jwa_lock.Lock();
   jwa_stop = true;
   jwa_cond.Signal();
   jwa_lock.Unlock();
   jwa_thread.join();
-
-  op_tp.stop();
 
   journal_stop();
   if (!(generic_flags & SKIP_JOURNAL_REPLAY))
@@ -1635,7 +1647,6 @@ int XStore::umount()
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     (*it)->stop();
   }
-  callback_finisher->stop();
 
   if (m_enable_mscache)
     mscache_modules_exit();
@@ -1987,6 +1998,12 @@ void XStore::_txn_aio_finish(C_AioArgs *args)
     }
     fd->cond.Signal();
   }
+  {
+    Mutex::Locker l(store_aio_lock);
+    if (store_aio_inflight.dec() == 0) {
+      store_aio_cond.Signal();
+    }
+  }
   Mutex::Locker l(o->lock);
   assert(o->aio.dec() == 0);
   o->data_done = true;
@@ -2059,6 +2076,17 @@ struct C_JournaledAckWritten : public Context {
   }
 };
 
+void XStore::_jwa_drain()
+{
+  jwa_lock.Lock();
+  jwa_draining++;
+  while (jwa_processing || jwa_queue.size()) {
+    jwa_wait_cond.Wait(jwa_lock);
+  }
+  jwa_draining--;
+  jwa_lock.Unlock();
+}
+
 void XStore::_jwa_entry()
 {
   dout(1) << __func__ << " start, pid " << ceph_gettid() << dendl;
@@ -2073,6 +2101,7 @@ void XStore::_jwa_entry()
       dout(20) << __func__ << " wake" << dendl;
       continue;
     } else {
+      jwa_processing = true;
       utime_t start = ceph_clock_now(NULL);
       list<Op*> jwa_opq;
       __u32 index = 0;
@@ -2138,6 +2167,10 @@ void XStore::_jwa_entry()
       }
       logger->tinc(l_xs_ack_commit_lat, ceph_clock_now(NULL) - start);
       jwa_lock.Lock();
+      jwa_processing = false;
+      if (jwa_draining) {
+        jwa_wait_cond.Signal();
+      }
     }
   }
   jwa_lock.Unlock();
@@ -3503,11 +3536,7 @@ int XStore::direct_write(
           (f_len? MSCACHE_WRITE_HINT_TRUNCATE : 0),
           f_len);
         if (m_enable_mscache_aio) {
-          op->aio_bl.push_back(write_ptr);
-          assert(op->lock.is_locked());
-          op->aio.inc();
-          Mutex::Locker fl(fd->lock);
-          fd->aio.inc();
+          prep_aio_ctx(fd, op, write_ptr);
         }
       } else {
         got = safe_pwrite(**fd, write_ptr.c_str(), w_len, w_off);
@@ -3543,11 +3572,7 @@ int XStore::direct_write(
           if (fd->has_truncate()) {
             fd->flush();
           }
-          op->aio_bl.push_back(bl.buffers().front());
-          assert(op->lock.is_locked());
-          op->aio.inc();
-          Mutex::Locker fl(fd->lock);
-          fd->aio.inc();
+          prep_aio_ctx(fd, op, bl.buffers().front());
         }
         got = mscache_write(fd, oss.str().c_str(), bl.buffers().front().c_str(), w_len, w_off,
           (m_enable_mscache_aio? new C_AioArgs(this, op, osr, fd, 0) : NULL),
@@ -3576,6 +3601,17 @@ int XStore::direct_write(
     return got;
   }
   return 0;
+}
+
+void XStore::prep_aio_ctx(FDRef &fd, Op *op, const bufferptr &ptr)
+{
+  op->aio_bl.push_back(ptr);
+  assert(op->lock.is_locked());
+  op->aio.inc();
+  Mutex::Locker fl(fd->lock);
+  fd->aio.inc();
+  Mutex::Locker l(store_aio_lock);
+  store_aio_inflight.inc();
 }
 
 int XStore::truncate_and_check(
@@ -4391,7 +4427,25 @@ void XStore::sync()
 void XStore::_flush_op_queue()
 {
   dout(10) << "_flush_op_queue draining op tp" << dendl;
+  // drain all DataOps
   op_wq.drain();
+
+  // wait all aio finish
+  store_aio_lock.Lock();
+  while (store_aio_inflight.read()) {
+    store_aio_cond.Wait(store_aio_lock);
+  }
+  store_aio_lock.Unlock();
+  callback_finisher->wait_for_empty();
+
+  // drain all ack entry
+  _jwa_drain();
+
+  journal->flush();
+
+  // drain all MetaOps
+  op_wq.drain();
+
   dout(10) << "_flush_op_queue waiting for apply finisher" << dendl;
   for (vector<Finisher*>::iterator it = ondisk_finishers.begin(); it != ondisk_finishers.end(); ++it) {
     (*it)->wait_for_empty();
@@ -4399,7 +4453,6 @@ void XStore::_flush_op_queue()
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     (*it)->wait_for_empty();
   }
-  callback_finisher->wait_for_empty();
 }
 
 /*

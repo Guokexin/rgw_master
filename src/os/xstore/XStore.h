@@ -283,6 +283,9 @@ private:
   // sync thread
   Mutex lock;
   Mutex apply_lock;
+  Mutex store_aio_lock;
+  atomic_t store_aio_inflight;
+  Cond store_aio_cond;
   bool force_sync;
   Cond sync_cond;
 
@@ -312,6 +315,10 @@ public:
   uint64_t *jwa_seq;
   uint64_t m_xstore_max_commit_entries;
 
+  void _jwa_drain();
+  int jwa_draining;
+  bool jwa_processing;
+  Cond jwa_wait_cond;
   void _jwa_entry();
   struct JournaledWrittenAckThread : public Thread {
     XStore *fs;
@@ -861,6 +868,7 @@ public:
     uint32_t op_flags = 0,
     Op *op = NULL,
     OpSequencer *osr = NULL);
+  void prep_aio_ctx(FDRef &fd, Op *op, const bufferptr &ptr);
   int fiemap(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, bufferlist& bl);
 
   int _touch(coll_t cid, const ghobject_t& oid);
