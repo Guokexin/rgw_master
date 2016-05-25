@@ -8941,11 +8941,13 @@ void OSD::process_throttled_recoveries()
     return;
   }
 
+  bool release_timer_wait = true;
   while (!throttled_recs.empty()) {
-    if (rec_throttle.schedule_timer(true)) {
+    if (rec_throttle.schedule_timer(release_timer_wait)) {
       dout(20) << __func__ << " need to wait"<< dendl;
       break;
     }
+    release_timer_wait = false;
 
     // Start the recovery op
     boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> throttled_rec =
@@ -8956,7 +8958,7 @@ void OSD::process_throttled_recoveries()
     int priority = boost::get<2>(throttled_rec);
     rec_throttle_lock.Unlock(); // release the throttle lock to avoid deadlock with pg lock
     pg->lock();
-    bool more = pg->get_pgbackend()->run_recovery_op_throttle(rec_handle, priority, true);
+    bool more = pg->get_pgbackend()->run_recovery_op_throttle(rec_handle, priority, false);
     pg->unlock();
     rec_throttle_lock.Lock();
     if (more) {
@@ -9025,4 +9027,22 @@ void OSD::adjust_recovery_throttle()
         rec_throttle.reset_bucket_average();
     }
   }
+}
+
+void OSD::remove_throttled_recoveries(PG *pg)
+{
+  dout(20) << __func__ << dendl;
+  rec_throttle_lock.Lock();
+  list<boost::tuple<PGBackend::Listener*, PGBackend::RecoveryHandle*, int> >::iterator it = throttled_recs.begin();
+  while (it != throttled_recs.end()) {
+    ReplicatedPG *_pg = dynamic_cast<ReplicatedPG*>(boost::get<0>(*it));
+    if (_pg == pg) {
+      PGBackend::RecoveryHandle *rec_handle = boost::get<1>(*it);
+      throttled_recs.erase(it++);
+      delete rec_handle;
+    } else {
+      ++it;
+    }
+  }
+  rec_throttle_lock.Unlock();
 }

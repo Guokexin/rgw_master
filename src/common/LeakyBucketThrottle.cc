@@ -23,7 +23,7 @@
 
 LeakyBucketThrottle::LeakyBucketThrottle(CephContext *c, uint64_t op_size)
   : cct(c), op_size(op_size), lock("LeakyBucketThrottle::lock"),
-    timer(c, lock, true), enable(false), mode(THROTTLE_MODE_NONE),
+    timer(c, lock, false), enable(false), mode(THROTTLE_MODE_NONE),
     client_bw_threshold(0), client_iops_threshold(0),
     avg_is_max(false), avg_reset(false)
 {
@@ -206,10 +206,9 @@ bool LeakyBucketThrottle::config_client_threshold(int64_t bw_threshold,
  */
 bool LeakyBucketThrottle::schedule_timer(bool is_write, bool release_timer_wait)
 {
+  Mutex::Locker l(lock);
   if (release_timer_wait)
     timer_wait[is_write] = false;
-  else
-    lock.Lock();
 
   /* leak proportionally to the time elapsed */
   throttle_do_leak();
@@ -219,8 +218,6 @@ bool LeakyBucketThrottle::schedule_timer(bool is_write, bool release_timer_wait)
 
   /* if the code must wait compute when the next timer should fire */
   if (!wait) {
-    if (!release_timer_wait)
-      lock.Unlock();
     return false;
   }
 
@@ -230,8 +227,6 @@ bool LeakyBucketThrottle::schedule_timer(bool is_write, bool release_timer_wait)
     timer.add_event_after(wait, timer_cb[is_write]);
     timer_wait[is_write] = true;
   }
-  if (!release_timer_wait)
-    lock.Unlock();
   return true;
 }
 
@@ -242,10 +237,9 @@ bool LeakyBucketThrottle::schedule_timer(bool is_write, bool release_timer_wait)
  */
 bool LeakyBucketThrottle::schedule_timer(bool release_timer_wait)
 {
+  Mutex::Locker l(lock);
   if (release_timer_wait)
     timer_wait[0] = false;
-  else
-    lock.Lock();
 
   /* leak proportionally to the time elapsed */
   throttle_do_leak();
@@ -255,8 +249,6 @@ bool LeakyBucketThrottle::schedule_timer(bool release_timer_wait)
 
   /* if the code must wait compute when the next timer should fire */
   if (!wait) {
-    if (!release_timer_wait)
-      lock.Unlock();
     return false;
   }
 
@@ -268,8 +260,6 @@ bool LeakyBucketThrottle::schedule_timer(bool release_timer_wait)
     timer.add_event_after(wait, timer_cb[0]);
     timer_wait[0] = true;
   }
-  if (!release_timer_wait)
-    lock.Unlock();
   return true;
 }
 

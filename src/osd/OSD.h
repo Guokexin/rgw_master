@@ -2122,6 +2122,7 @@ protected:
   void process_throttled_recoveries();
   void get_object_stats_sum(object_stat_collection_t &stat_sum);
   void adjust_recovery_throttle();
+  void remove_throttled_recoveries(PG *pg);
 
   // replay / delayed pg activation
   Mutex replay_queue_lock;
