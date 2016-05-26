@@ -101,6 +101,7 @@ class CephContext;
 
       void reset() {
         partial.clear();
+        total_intended_len = 0;
       }
     };
 
