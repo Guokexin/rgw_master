@@ -6147,6 +6147,10 @@ done:
       ss << "pool " << poolstr << " snap " << snapname << " already exists";
       err = 0;
       goto reply;
+    } else if (p->is_tier()) {
+      ss << "pool " << poolstr << " is a cache tier";
+      err = -EINVAL;
+      goto reply;
     }
     pg_pool_t *pp = 0;
     if (pending_inc.new_pools.count(pool))
@@ -6185,6 +6189,10 @@ done:
     } else if (!p->snap_exists(snapname.c_str())) {
       ss << "pool " << poolstr << " snap " << snapname << " does not exist";
       err = 0;
+      goto reply;
+    } else if (p->is_tier()) {
+      ss << "pool " << poolstr << " is a cache tier";
+      err = -EINVAL;
       goto reply;
     }
     pg_pool_t *pp = 0;
@@ -6985,7 +6993,7 @@ bool OSDMonitor::preprocess_pool_op(MPoolOp *m)
   
   switch (m->op) {
   case POOL_OP_CREATE_SNAP:
-    if (p->is_unmanaged_snaps_mode()) {
+    if (p->is_unmanaged_snaps_mode() || p->is_tier()) {
       _pool_op_reply(m, -EINVAL, osdmap.get_epoch());
       return true;
     }
@@ -7001,7 +7009,7 @@ bool OSDMonitor::preprocess_pool_op(MPoolOp *m)
     }
     return false;
   case POOL_OP_DELETE_SNAP:
-    if (p->is_unmanaged_snaps_mode()) {
+    if (p->is_unmanaged_snaps_mode() || p->is_tier()) {
       _pool_op_reply(m, -EINVAL, osdmap.get_epoch());
       return true;
     }
@@ -7082,7 +7090,7 @@ bool OSDMonitor::prepare_pool_op(MPoolOp *m)
   switch (m->op) {
     case POOL_OP_CREATE_SNAP:
     case POOL_OP_DELETE_SNAP:
-      if (!pool->is_unmanaged_snaps_mode()) {
+      if (!(pool->is_unmanaged_snaps_mode() || pool->is_tier())) {
         bool snap_exists = pool->snap_exists(m->name.c_str());
         if ((m->op == POOL_OP_CREATE_SNAP && snap_exists)
           || (m->op == POOL_OP_DELETE_SNAP && !snap_exists)) {
