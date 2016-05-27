@@ -121,7 +121,7 @@ protected:
   int get_ack_txns_seq(uint64_t fs_op_seq, list<uint64_t> &acks);
 
   void _op_journal_transactions(bufferlist& tls, uint32_t orig_len, uint64_t op,
-				Context *onjournal, TrackedOpRef osd_op);
+				Context *onjournal, TrackedOpRef& osd_op);
 
   virtual int do_transactions(list<ObjectStore::Transaction*>& tls, uint64_t op_seq) = 0;
   virtual void reset_object_size() = 0;

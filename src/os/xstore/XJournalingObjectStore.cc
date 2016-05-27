@@ -197,11 +197,10 @@ uint64_t XJournalingObjectStore::ApplyManager::op_apply_start(uint64_t op)
   dout(10) << "op_apply_start " << op << " open_ops " << open_ops << " -> " << (open_ops+1) << dendl;
   assert(op > committed_seq);
   open_ops++;
-  if (replaying) {
+  if (replaying)
     unapply_seq.insert(op);
-  } else {
+  else
     assert(unapply_seq.count(op));
-  }
   return op;
 }
 
@@ -321,7 +320,7 @@ void XJournalingObjectStore::ApplyManager::commit_finish()
 
 void XJournalingObjectStore::_op_journal_transactions(
   bufferlist& tbl, uint32_t orig_len, uint64_t op,
-  Context *onjournal, TrackedOpRef osd_op)
+  Context *onjournal, TrackedOpRef& osd_op)
 {
   if (osd_op.get())
     dout(10) << "op_journal_transactions " << op << " reqid_t "

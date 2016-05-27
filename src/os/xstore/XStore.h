@@ -83,6 +83,11 @@ enum {
   l_xs_wal_op,
   l_xs_ack_entry,
   l_xs_ack_commit,
+  l_xs_ack_commit_lat,
+  l_xs_submit_entry_lat,
+  l_xs_mscache_aio_lat,
+  l_xs_xstore_op_summit_lat,
+  l_xs_xstore_op_queue_lat,
   l_xs_last,
 };
 class XStore : public XJournalingObjectStore,
@@ -277,6 +282,10 @@ private:
 
   // sync thread
   Mutex lock;
+  Mutex apply_lock;
+  Mutex store_aio_lock;
+  atomic_t store_aio_inflight;
+  Cond store_aio_cond;
   bool force_sync;
   Cond sync_cond;
 
@@ -306,6 +315,10 @@ public:
   uint64_t *jwa_seq;
   uint64_t m_xstore_max_commit_entries;
 
+  void _jwa_drain();
+  int jwa_draining;
+  bool jwa_processing;
+  Cond jwa_wait_cond;
   void _jwa_entry();
   struct JournaledWrittenAckThread : public Thread {
     XStore *fs;
@@ -317,14 +330,62 @@ public:
   } jwa_thread;
 
   // -- op workqueue --
+  struct DataOps {
+    Transaction::Op ops[7];
+    uint32_t op_num;
+
+    coll_t alloc_cid;
+    ghobject_t alloc_obj;
+
+    coll_t write_cid;
+    ghobject_t write_obj;
+    bufferlist write_bl;
+    uint32_t fadvise_flags;
+
+    DataOps(): op_num(0), fadvise_flags(0) {}
+  };
+
+  struct MetaOps {
+    Transaction::Op ops[7];
+    uint32_t op_num;
+
+    coll_t setattrs_cid;
+    ghobject_t setattrs_obj;
+    SequencerPosition setattrs_pos;
+    map<string, bufferptr> *attrs;
+
+    coll_t rmkeys_cid;
+    ghobject_t rmkeys_obj;
+    SequencerPosition rmkeys_pos;
+    set<string> *rmkeys;
+
+    coll_t setkeys_cid;
+    ghobject_t setkeys_obj;
+    SequencerPosition setkeys_pos;
+    map<string, bufferlist> *setkeys;
+
+    MetaOps(): op_num(0), attrs(NULL), rmkeys(NULL), setkeys(NULL) {}
+
+    ~MetaOps() {
+      delete attrs;
+      delete rmkeys;
+      delete setkeys;
+    }
+  };
+
   struct Op {
     utime_t start;
     uint64_t op;
     list<Transaction*> tls;
+    DataOps *data_ops;
+    MetaOps *meta_ops;
+
     Context *ondisk, *onreadable, *onreadable_sync;
     uint64_t ops, bytes;
     TrackedOpRef osd_op;
     bool wal;
+    bool data_done;
+    bool journal_done;
     OpSequencer *osr;
     enum apply_state {
       STATE_INIT     = 0,
@@ -338,7 +399,8 @@ public:
     list<bufferptr> aio_bl;
     Mutex lock;
 
-    Op() : lock("Op::lock") {}
+    Op() : data_ops(NULL), meta_ops(NULL), data_done(false),
+           journal_done(false), lock("Op::lock") {}
     bool has_aio() {
       assert(lock.is_locked());
       return aio.read() > 0;
@@ -349,25 +411,48 @@ public:
     void put_lock() {
       lock.Unlock();
     }
+
+    const char *get_state_name() {
+      switch (state) {
+      case STATE_INIT: return "init";
+      case STATE_WRITE: return "write";
+      case STATE_JOURNAL: return "journal";
+      case STATE_COMMIT: return "commit";
+      case STATE_ACK: return "ack";
+      case STATE_DONE: return "done";
+      }
+      return "???";
+    }
+ 
+    ~Op() {
+      delete data_ops;
+      delete meta_ops;
+    }
   };
 
-  struct AioArgs {
-    XStore *fs;
+  struct C_AioArgs : public Context {
+    XStore *store;
     Op *op;
     OpSequencer *osr;
     FDRef fd;
     bool truncate;
-    AioArgs(XStore *fs, Op *op, OpSequencer *osr, FDRef& fd, bool tr):
-      fs(fs), op(op), osr(osr), fd(fd), truncate(tr) {}
+    utime_t start;
+    C_AioArgs(XStore *fs, Op *op, OpSequencer *osr, FDRef& fd, bool tr):
+      store(fs), op(op), osr(osr), fd(fd), truncate(tr) {
+      start = ceph_clock_now(NULL);
+    }
+
+    void finish(int r) {
+      store->_txn_aio_finish(this);
+    }
   };
 
   friend ostream& operator<<(ostream& out, const Op& o)
   {
-    out << " " << &o << " seq " << o.op << " ondisk " << o.ondisk
-        << " osr " << *(o.osr) << "/" << o.osr->parent << " wal " << o.wal;
+    out << &o << " seq " << o.op << " aio " << o.aio.read() << " "
+        << *(o.osr) << "/" << o.osr->parent << " wal " << o.wal;
     if (o.osd_op)
       out << " op " << o.osd_op;
-    out << " ";
     return out;
   }
 
@@ -455,17 +540,17 @@ public:
       cond.Signal();
       _wake_flush_waiters(to_queue);
     }
-    void queue(Op *o) {
+    void queue(Op *o, bool first) {
       Mutex::Locker l(qlock);
-      q.push_back(o);
+        q.push_back(o);
+      if (first) {
+        jq.push_back(o->op);
+        in_q.push_back(o);
+      }
     }
     Op *peek_queue() {
       assert(apply_lock.is_locked());
       return q.front();
-    }
-    void queue_inq(Op *o) {
-      Mutex::Locker l(qlock);
-      in_q.push_back(o);
     }
     list<Op*> *get_inq() {
       assert(qlock.is_locked());
@@ -585,29 +670,26 @@ public:
       return osr;
     }
     void _process(OpSequencer *osr, ThreadPool::TPHandle &handle) {
-      store->_do_op(osr, handle);
-    }
-    void _process_finish(OpSequencer *osr) {
-      store->_finish_op(osr);
+      store->_txn_io_proc(osr, handle);
     }
     void _clear() {
       assert(store->op_queue.empty());
     }
   } op_wq;
 
-  void _do_op(OpSequencer *o, ThreadPool::TPHandle &handle);
-  void _finish_op(OpSequencer *o);
+  void _txn_io_proc(OpSequencer *o, ThreadPool::TPHandle &handle);
+  void _txn_io_finish(OpSequencer *osr, Op *o);
   Op *build_op(list<Transaction*>& tls,
 	       Context *ondisk, Context *onreadable, Context *onreadable_sync,
 	       TrackedOpRef osd_op,
                OpSequencer *osr);
-  void aio_callback(AioArgs *args);
-  void queue_op(OpSequencer *osr, Op *o);
+  void _txn_aio_finish(C_AioArgs *args);
+  void queue_op(OpSequencer *osr, Op *o, bool first);
   void op_queue_reserve_throttle(Op *o, ThreadPool::TPHandle *handle = NULL);
   void op_queue_release_throttle(Op *o);
   void _journaled_written(Op *o);
   void _journaled_ack_written(list<Op *> acks);
-  bool get_replay_txns(list<Transaction*>& tls, list<Transaction*>* jtls);
+  bool split_txns(Op *op, list<Transaction*>* jtls);
   friend struct C_JournaledWritten;
   friend struct C_JournaledAckWritten;
 
@@ -698,11 +780,15 @@ public:
     Transaction& t, uint64_t op_seq, int trans_num, Op *o,
     ThreadPool::TPHandle *handle);
 
+  void _txn_state_proc(Op *o);
+  int _do_data_txn(Op *op, ThreadPool::TPHandle *handle);
+  int _do_meta_txn(Op *op, ThreadPool::TPHandle *handle);
+  void _do_txn_error_proc(int r, Transaction::Op *op, Op *o, SequencerPosition *spos = NULL);
   int queue_transactions(Sequencer *osr, list<Transaction*>& tls,
 			 TrackedOpRef op = TrackedOpRef(),
 			 ThreadPool::TPHandle *handle = NULL);
 
-  bool _should_wal(list<Transaction*> &tls);
+  bool init_judge_wal(list<Transaction*> &tls);
   /**
    * set replay guard xattr on given file
    *
@@ -782,6 +868,7 @@ public:
     uint32_t op_flags = 0,
     Op *op = NULL,
     OpSequencer *osr = NULL);
+  void prep_aio_ctx(FDRef &fd, Op *op, const bufferptr &ptr);
   int fiemap(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len, bufferlist& bl);
 
   int _touch(coll_t cid, const ghobject_t& oid);
