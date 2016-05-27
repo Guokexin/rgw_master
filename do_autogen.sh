@@ -130,7 +130,12 @@ fi
 export CFLAGS
 export CXXFLAGS
 
-./autogen.sh || die "autogen failed"
+CLONE_XSTORE="no"
+echo "$CONFIGURE_FLAGS"
+if $(echo "$CONFIGURE_FLAGS" | grep with-xstore -q);then
+  CLONE_XSTORE="yes"
+fi
+./autogen.sh $CLONE_XSTORE || die "autogen failed"
 
 ./configure \
 --prefix=/usr --sbindir=/sbin --localstatedir=/var --sysconfdir=/etc \
