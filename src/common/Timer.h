@@ -42,8 +42,8 @@ class SafeTimer
   void timer_thread();
   void _shutdown();
 
-  std::multimap<utime_t, Context*> schedule;
-  std::map<Context*, std::multimap<utime_t, Context*>::iterator> events;
+  std::multimap<utime_mono_t, Context*> schedule;
+  std::map<Context*, std::multimap<utime_mono_t, Context*>::iterator> events;
   bool stopping;
 
   void dump(const char *caller = 0) const;
@@ -74,7 +74,7 @@ public:
   /* Schedule an event in the future
    * Call with the event_lock LOCKED */
   void add_event_after(double seconds, Context *callback);
-  void add_event_at(utime_t when, Context *callback);
+  void add_event_at(utime_mono_t when, Context *callback);
 
   /* Cancel an event.
    * Call with the event_lock LOCKED

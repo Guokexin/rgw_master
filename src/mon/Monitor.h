@@ -693,7 +693,7 @@ public:
 
   void health_tick_start();
   void health_tick_stop();
-  utime_t health_interval_calc_next_update();
+  utime_mono_t health_interval_calc_next_update();
   void health_interval_start();
   void health_interval_stop();
   void health_events_cleanup();

@@ -3968,7 +3968,7 @@ void OSD::tick()
     heartbeat_lock.Unlock();
 
     // mon report?
-    utime_t now = ceph_mono_clock_now(cct);
+    utime_mono_t now = ceph_mono_clock_now(cct);
     if (outstanding_pg_stats && timeout_mon_on_pg_stats &&
 	(now - cct->_conf->osd_mon_ack_timeout) > last_pg_stats_ack) {
       dout(1) << "mon hasn't acked PGStats in " << now - last_pg_stats_ack
@@ -3976,7 +3976,7 @@ void OSD::tick()
       monc->reopen_session(new C_MonStatsAckTimer(this));
       timeout_mon_on_pg_stats = false;
       last_pg_stats_ack = ceph_mono_clock_now(cct);  // reset clock
-      last_pg_stats_sent = utime_t();
+      last_pg_stats_sent = utime_mono_t();
     }
     if (now - last_pg_stats_sent > cct->_conf->osd_mon_report_interval_max) {
       osd_stat_updated = true;

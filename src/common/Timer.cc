@@ -42,7 +42,7 @@ public:
 
 
 
-typedef std::multimap < utime_t, Context *> scheduled_map_t;
+typedef std::multimap < utime_mono_t, Context *> scheduled_map_t;
 typedef std::map < Context*, scheduled_map_t::iterator > event_lookup_map_t;
 
 SafeTimer::SafeTimer(CephContext *cct_, Mutex &l, bool safe_callbacks)
@@ -86,7 +86,7 @@ void SafeTimer::timer_thread()
   lock.Lock();
   ldout(cct,10) << "timer_thread starting" << dendl;
   while (!stopping) {
-    utime_t now = ceph_mono_clock_now(cct);
+    utime_mono_t now = ceph_mono_clock_now(cct);
     
     while (!schedule.empty()) {
       scheduled_map_t::iterator p = schedule.begin();
@@ -115,7 +115,7 @@ void SafeTimer::timer_thread()
     if (schedule.empty())
       cond.Wait(lock);
     else
-      cond.WaitUntil(lock, schedule.begin()->first, true);
+      cond.WaitUntil(lock, schedule.begin()->first);
     ldout(cct,20) << "timer_thread awake" << dendl;
   }
   ldout(cct,10) << "timer_thread exiting" << dendl;
@@ -126,12 +126,12 @@ void SafeTimer::add_event_after(double seconds, Context *callback)
 {
   assert(lock.is_locked());
 
-  utime_t when = ceph_mono_clock_now(cct);
+  utime_mono_t when = ceph_mono_clock_now(cct);
   when += seconds;
   add_event_at(when, callback);
 }
 
-void SafeTimer::add_event_at(utime_t when, Context *callback)
+void SafeTimer::add_event_at(utime_mono_t when, Context *callback)
 {
   assert(lock.is_locked());
   ldout(cct,10) << "add_event_at " << when << " -> " << callback << dendl;
@@ -156,7 +156,7 @@ bool SafeTimer::cancel_event(Context *callback)
 {
   assert(lock.is_locked());
   
-  std::map<Context*, std::multimap<utime_t, Context*>::iterator>::iterator p = events.find(callback);
+  std::map<Context*, std::multimap<utime_mono_t, Context*>::iterator>::iterator p = events.find(callback);
   if (p == events.end()) {
     ldout(cct,10) << "cancel_event " << callback << " not found" << dendl;
     return false;
@@ -176,7 +176,7 @@ void SafeTimer::cancel_all_events()
   assert(lock.is_locked());
   
   while (!events.empty()) {
-    std::map<Context*, std::multimap<utime_t, Context*>::iterator>::iterator p = events.begin();
+    std::map<Context*, std::multimap<utime_mono_t, Context*>::iterator>::iterator p = events.begin();
     ldout(cct,10) << " cancelled " << p->second->first << " -> " << p->first << dendl;
     delete p->first;
     schedule.erase(p->second);
