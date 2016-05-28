@@ -82,10 +82,10 @@ namespace librbd {
     void reset() {
       Mutex::Locker l(lock);
       if (aio_type == AIO_TYPE_NONE) {
-        assert(!released && pending_count == 0 && blockers == 1 && ref == 1);
+        assert(!released && pending_count == 0 && blockers == 1 && !done);
         return ;
       }
-      assert(!released && pending_count == 0 && blockers == 0 && ref == 1);
+      assert(!released && pending_count == 0 && blockers == 0 && done);
       done = false;
       rval = 0;
       ictx = NULL;
