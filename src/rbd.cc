@@ -867,6 +867,7 @@ struct rbd_bencher {
   Mutex lock;
   Cond cond;
   int in_flight;
+  std::list<librbd::RBD::AioCompletion *> comps;
 
   rbd_bencher(librbd::Image *i)
     : image(i),
@@ -877,25 +878,37 @@ struct rbd_bencher {
   bool start_write(int max, uint64_t off, uint64_t len, bufferlist& bl,
 		   int op_flags)
   {
+    librbd::RBD::AioCompletion *c = NULL;
     {
       Mutex::Locker l(lock);
       if (in_flight >= max)
 	return false;
       in_flight++;
+      if (!comps.empty()) {
+        c = comps.back();
+        comps.pop_back();
+      } else {
+        c = new librbd::RBD::AioCompletion((void *)this, rbd_bencher_completion);
+      }
     }
-    librbd::RBD::AioCompletion *c =
-      new librbd::RBD::AioCompletion((void *)this, rbd_bencher_completion);
+    c->reset();
     image->aio_write2(off, len, bl, c, op_flags);
     //cout << "start " << c << " at " << off << "~" << len << std::endl;
     return true;
   }
 
   void wait_for(int max) {
+    librbd::RBD::AioCompletion *c = NULL;
     Mutex::Locker l(lock);
     while (in_flight > max) {
       utime_t dur;
       dur.set_from_double(.2);
       cond.WaitInterval(g_ceph_context, lock, dur);
+    }
+    while (!comps.empty()) {
+      c = comps.back();
+      c->release();
+      comps.pop_back();
     }
   }
 
@@ -914,8 +927,8 @@ void rbd_bencher_completion(void *vc, void *pc)
   b->lock.Lock();
   b->in_flight--;
   b->cond.Signal();
+  b->comps.push_back(c);
   b->lock.Unlock();
-  c->release();
 }
 
 static int do_bench_write(librbd::Image& image, uint64_t io_size,
