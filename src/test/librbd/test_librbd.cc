@@ -3137,7 +3137,17 @@ TEST_F(TestLibRBD, ResetCompletion)
     queue.queue.pop_front();
     uint64_t offset = rand() % (size - TEST_IO_SIZE);
     rbd_aio_reset(comp);
-    ASSERT_EQ(0, rbd_aio_write(image, offset, TEST_IO_SIZE, test_data, comp));
+    switch (i % 3) {
+      case 0:
+        ASSERT_EQ(0, rbd_aio_write(image, offset, TEST_IO_SIZE, test_data, comp));
+        break;
+      case 1:
+        ASSERT_EQ(0, rbd_aio_read(image, offset, TEST_IO_SIZE, test_data, comp));
+        break;
+      case 2:
+        ASSERT_EQ(0, rbd_aio_discard(image, offset, TEST_IO_SIZE, comp));
+        break;
+    }
   }
 
   rbd_completion_t flush_comp;
