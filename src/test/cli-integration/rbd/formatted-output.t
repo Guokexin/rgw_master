@@ -20,7 +20,7 @@ snapshot
 ========
   $ rbd snap create bar@snap
   $ rbd resize -s 1024 bar
-  
+
   Resizing image: 100% complete...done.
   $ rbd snap create bar@snap2
   $ rbd snap create foo@snap
