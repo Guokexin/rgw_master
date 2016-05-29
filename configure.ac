@@ -739,6 +739,15 @@ AS_IF([test "x$with_kinetic" = "xyes"],
             [AC_DEFINE([HAVE_KINETIC], [1], [Defined if you have kinetic enabled])])
 AM_CONDITIONAL(WITH_KINETIC, [ test "$with_kinetic" = "yes" ])
 
+# xstore?
+AC_ARG_WITH([xstore],
+            [AS_HELP_STRING([--with-xstore], [build xstore support])],
+            [],
+            [with_xstore=no])
+AS_IF([test "x$with_xstore" = "xyes"],
+            [AC_DEFINE([HAVE_XSTORE], [1], [Defined if you have xstore enabled])])
+AM_CONDITIONAL(WITH_XSTORE, [ test "$with_xstore" = "yes" ])
+
 # check for c++11 (but do not enable it)
 old_cxxflags="$CXXFLAGS"
 AX_CXX_COMPILE_STDCXX_11([], [optional])

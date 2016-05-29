@@ -24,10 +24,7 @@ libos_la_SOURCES = \
 	os/ObjectStore.cc \
 	os/WBThrottle.cc \
         os/KeyValueDB.cc \
-	common/TrackedOp.cc \
-	os/xstore/XJournalingObjectStore.cc \
-	os/xstore/XJournal.cc \
-	os/xstore/XStore.cc
+	common/TrackedOp.cc
 
 if LINUX
 libos_la_SOURCES += os/BtrfsFileStoreBackend.cc
@@ -40,13 +37,6 @@ endif
 if WITH_LIBZFS
 libos_la_SOURCES += os/ZFSFileStoreBackend.cc
 endif
-
-#if WITH_MSCACHE
-libos_la_SOURCES += os/xstore/mscache/backend_aio.cpp
-libos_la_SOURCES += os/xstore/mscache/rcache.cpp
-libos_la_SOURCES += os/xstore/mscache/mscache_bm.cpp
-libos_la_SOURCES += os/xstore/mscache/mscache.cpp
-#endif
 
 libos_la_CXXFLAGS = ${AM_CXXFLAGS}
 libos_la_LIBADD = $(LIBOS_TYPES)
@@ -79,10 +69,7 @@ noinst_HEADERS += \
 	os/SequencerPosition.h \
 	os/WBThrottle.h \
 	os/XfsFileStoreBackend.h \
-	os/ZFSFileStoreBackend.h \
-	os/xstore/XJournal.h \
-	os/xstore/XJournalingObjectStore.h \
-	os/xstore/XStore.h
+	os/ZFSFileStoreBackend.h
 
 if WITH_SLIBROCKSDB
 libos_rocksdb_la_SOURCES = os/RocksDBStore.cc
@@ -112,4 +99,28 @@ libos_la_LIBADD += -lkinetic_client -lprotobuf -lglog -lgflags libcrypto.a
 noinst_HEADERS += os/KineticStore.h
 endif
 
+if WITH_XSTORE
+libos_la_SOURCES += os/xstore/mscache/mscache.cpp \
+		    os/xstore/mscache/mscache_bm.cpp \
+	            os/xstore/XJournalingObjectStore.cc \
+	            os/xstore/XJournal.cc \
+	            os/xstore/XStore.cc \
+		    os/xstore/mscache/backend_aio.cpp \
+		    os/xstore/mscache/rcache.cpp
+libos_la_CXXFLAGS += -std=gnu++11
+noinst_HEADERS += os/xstore/XJournal.h \
+		  os/xstore/XJournalingObjectStore.h \
+		  os/xstore/XStore.h \
+                  os/xstore/mscache/mscache_expt.h \
+                  os/xstore/mscache/backend_aio.h \
+                  os/xstore/mscache/mscache_bm.h \
+                  os/xstore/mscache/mscache_common.h \
+                  os/xstore/mscache/mscache_debug.h \
+                  os/xstore/mscache/mscache_list.h \
+                  os/xstore/mscache/mscache_type.h \
+                  os/xstore/mscache/rcache_bm.h \
+                  os/xstore/mscache/rcache.h \
+                  os/xstore/mscache/mscache.h
+
+endif
 endif # ENABLE_SERVER

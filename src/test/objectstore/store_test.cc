@@ -20,7 +20,9 @@
 #include "os/ObjectStore.h"
 #include "os/FileStore.h"
 #include "os/KeyValueStore.h"
+#ifdef HAVE_XSTORE
 #include "os/xstore/XStore.h"
+#endif
 #include "include/Context.h"
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
@@ -1742,7 +1744,12 @@ TEST_P(StoreTest, SetAllocHint) {
 INSTANTIATE_TEST_CASE_P(
   ObjectStore,
   StoreTest,
-  ::testing::Values("xstore", "memstore", "filestore", "keyvaluestore"));
+  ::testing::Values("memstore",
+#ifdef HAVE_XSTORE
+    "xstore",
+#endif
+    "filestore",
+    "keyvaluestore"));
 
 #else
 

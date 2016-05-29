@@ -19,6 +19,7 @@ do_autogen.sh: make a ceph build by running autogen, etc.
 -j                               with java
 -r                               with rocksdb
 -J				 --with-jemalloc
+-X				 --with-xstore
 
 EOF
 }
@@ -32,7 +33,7 @@ debug_level=0
 verbose=0
 profile=0
 CONFIGURE_FLAGS="--disable-static --with-lttng"
-while getopts  "d:e:hHrTPJLjpcvO:" flag
+while getopts  "d:e:hHrTPJLjpcvXO:" flag
 do
     case $flag in
     d) debug_level=$OPTARG;;
@@ -60,6 +61,8 @@ do
     J) CONFIGURE_FLAGS="$CONFIGURE_FLAGS --with-jemalloc";;
 
     L) CONFIGURE_FLAGS="$CONFIGURE_FLAGS --without-lttng";;
+
+    X) CONFIGURE_FLAGS="$CONFIGURE_FLAGS --with-xstore";;
 
     *)
         echo
