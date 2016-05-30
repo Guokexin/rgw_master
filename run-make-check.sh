@@ -48,8 +48,8 @@ function run() {
     if test -f ./install-deps.sh ; then
 	$DRY_RUN ./install-deps.sh || return 1
     fi
-    $DRY_RUN ./autogen.sh || return 1
-    $DRY_RUN ./configure "$@" --disable-static --with-radosgw --with-debug --without-lttng \
+    $DRY_RUN ./autogen.sh yes || return 1
+    $DRY_RUN ./configure "$@" --with-xstore --disable-static --with-radosgw --with-debug --without-lttng \
         CC="ccache gcc" CXX="ccache g++" CFLAGS="-Wall -g" CXXFLAGS="-Wall -g" || return 1
     $DRY_RUN make -j$(get_processors) || return 1
     $DRY_RUN make $(maybe_parallel_make_check) check || return 1

@@ -32,7 +32,7 @@ die() {
 debug_level=0
 verbose=0
 profile=0
-CONFIGURE_FLAGS="--disable-static --with-lttng"
+CONFIGURE_FLAGS="--disable-static --with-lttng --with-xstore"
 while getopts  "d:e:hHrTPJLjpcvXO:" flag
 do
     case $flag in

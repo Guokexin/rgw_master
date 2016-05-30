@@ -38,8 +38,8 @@ vers=$(git describe --match "v*" | sed s/^v//)
 # creating the distribution tarbal requires some configure
 # options (otherwise parts of the source tree will be left out).
 #
-./autogen.sh
-./configure --with-rocksdb --with-ocf --with-rest-bench \
+./autogen.sh yes
+./configure --with-xstore --with-rocksdb --with-ocf --with-rest-bench \
     --with-nss --with-debug --enable-cephfs-java \
     --with-lttng --with-babeltrace --with-cryptopp
 #
