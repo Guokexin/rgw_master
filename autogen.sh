@@ -29,10 +29,22 @@ else
 fi
 
 if test -d ".git" ; then
-  if ! git submodule sync || ! git submodule update --init; then
-    echo "Error: could not initialize submodule projects"
-    echo "  Network connectivity might be required."
-    exit 1
+  for sub in $(cat .gitmodules | grep submodule | grep -v xstore |
+               awk '{print $2}' | tr -d '"' | tr -d '\]');do
+   if ! git submodule sync $sub || ! git submodule update --init $sub; then
+     echo "Error: could not initialize submodule projects"
+     echo "  Network connectivity might be required."
+     exit 1
+   fi
+  done
+
+  #clone xstore submodule?
+  if [ $# -ge 1 -a "$1" == "yes" ];then
+   if ! git submodule sync src/os/xstore || ! git submodule update --init src/os/xstore; then
+     echo "Error: could not initialize submodule projects"
+     echo "  Network connectivity might be required."
+     exit 1
+   fi
   fi
 fi
 

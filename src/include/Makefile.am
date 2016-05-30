@@ -113,14 +113,4 @@ noinst_HEADERS += \
 	include/hash_namespace.h \
 	include/unordered_set.h \
 	include/unordered_map.h \
-	include/event_type.h \
-	os/xstore/mscache/mscache_expt.h \
-	os/xstore/mscache/backend_aio.h \
-	os/xstore/mscache/mscache_bm.h \
-	os/xstore/mscache/mscache_common.h \
-	os/xstore/mscache/mscache_debug.h \
-	os/xstore/mscache/mscache_list.h \
-	os/xstore/mscache/mscache_type.h \
-	os/xstore/mscache/rcache_bm.h \
-	os/xstore/mscache/rcache.h \
-	os/xstore/mscache/mscache.h
+	include/event_type.h

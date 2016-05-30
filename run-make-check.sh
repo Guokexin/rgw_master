@@ -53,7 +53,7 @@ function run() {
         CC="ccache gcc" CXX="ccache g++" CFLAGS="-Wall -g" CXXFLAGS="-Wall -g" || return 1
     $DRY_RUN make -j$(get_processors) || return 1
     $DRY_RUN make $(maybe_parallel_make_check) check || return 1
-    $DRY_RUN make dist || return 1
+#    $DRY_RUN make dist || return 1
 }
 
 function main() {
