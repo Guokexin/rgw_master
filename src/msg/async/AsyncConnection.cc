@@ -1746,7 +1746,7 @@ ssize_t AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlis
     // disconnect from the Connection
     ldout(async_msgr->cct, 1) << __func__ << " replacing on lossy channel, failing existing" << dendl;
     existing->_stop();
-    existing->dispatch_queue->queue_reset(this);
+    existing->dispatch_queue->queue_reset(existing.get());
   } else {
     assert(can_write == NOWRITE);
     existing->write_lock.Lock(true);
