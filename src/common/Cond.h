@@ -71,8 +71,25 @@ class Cond {
     return r;
   }
 
-  int WaitUntil(Mutex &mutex, utime_t when, bool mclock = false) {
-    assert(mclock == mono_clock);
+  int WaitUntil(Mutex &mutex, utime_t when) {
+    assert(mono_clock == false);
+    // make sure this cond is used with one mutex only
+    assert(waiter_mutex == NULL || waiter_mutex == &mutex);
+    waiter_mutex = &mutex;
+
+    assert(mutex.is_locked());
+
+    struct timespec ts;
+    when.to_timespec(&ts);
+
+    mutex._pre_unlock();
+    int r = pthread_cond_timedwait(&_c, &mutex._m, &ts);
+    mutex._post_lock();
+
+    return r;
+  }
+  int WaitUntil(Mutex &mutex, utime_mono_t when) {
+    assert(mono_clock == true);
     // make sure this cond is used with one mutex only
     assert(waiter_mutex == NULL || waiter_mutex == &mutex);
     waiter_mutex = &mutex;
@@ -89,14 +106,16 @@ class Cond {
     return r;
   }
   int WaitInterval(CephContext *cct, Mutex &mutex, utime_t interval) {
-    utime_t when;
-    if (mono_clock) {
-      when = ceph_mono_clock_now(cct);
-    } else {
-      when = ceph_clock_now(cct);
-    }
+    assert(mono_clock == false);
+    utime_t when = ceph_clock_now(cct);
     when += interval;
-    return WaitUntil(mutex, when, mono_clock);
+    return WaitUntil(mutex, when);
+  }
+  int WaitInterval(CephContext *cct, Mutex &mutex, utime_mono_t interval) {
+    assert(mono_clock == true);
+    utime_mono_t when = ceph_mono_clock_now(cct);
+    when += interval;
+    return WaitUntil(mutex, when);
   }
 
   int SloppySignal() { 

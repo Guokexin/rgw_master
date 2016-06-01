@@ -2101,14 +2101,14 @@ void Monitor::health_tick_stop()
   }
 }
 
-utime_t Monitor::health_interval_calc_next_update()
+utime_mono_t Monitor::health_interval_calc_next_update()
 {
-  utime_t now = ceph_mono_clock_now(cct);
+  utime_mono_t now = ceph_mono_clock_now(cct);
 
   time_t secs = now.sec();
   int remainder = secs % cct->_conf->mon_health_to_clog_interval;
   int adjustment = cct->_conf->mon_health_to_clog_interval - remainder;
-  utime_t next = utime_t(secs + adjustment, 0);
+  utime_mono_t next = utime_mono_t(secs + adjustment, 0);
 
   dout(20) << __func__
     << " now: " << now << ","
@@ -2129,7 +2129,7 @@ void Monitor::health_interval_start()
   }
 
   health_interval_stop();
-  utime_t next = health_interval_calc_next_update();
+  utime_mono_t next = health_interval_calc_next_update();
   health_interval_event = new C_HealthToClogInterval(this);
   timer.add_event_at(next, health_interval_event);
 }

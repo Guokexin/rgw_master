@@ -37,11 +37,11 @@ utime_t ceph_clock_now(CephContext *cct)
 }
 
 #if defined(__linux__)
-utime_t ceph_mono_clock_now(CephContext *cct)
+utime_mono_t ceph_mono_clock_now(CephContext *cct)
 {
   struct timespec tp;
   clock_gettime(CLOCK_MONOTONIC, &tp);
-  utime_t n(tp);
+  utime_mono_t n(tp);
   if (cct)
     n += cct->_conf->clock_offset;
   return n;

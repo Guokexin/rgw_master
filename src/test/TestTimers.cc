@@ -93,8 +93,8 @@ static int basic_timer_test(T &timer, Mutex *lock)
   for (int i = 0; i < MAX_TEST_CONTEXTS; ++i) {
     if (lock)
       lock->Lock();
-    utime_t inc(2 * i, 0);
-    utime_t t = ceph_clock_now(g_ceph_context) + inc;
+    utime_mono_t inc(2 * i, 0);
+    utime_mono_t t = ceph_mono_clock_now(g_ceph_context) + inc;
     timer.add_event_at(t, test_contexts[i]);
     if (lock)
       lock->Unlock();
@@ -132,16 +132,16 @@ static int test_out_of_order_insertion(SafeTimer &timer, Mutex *lock)
   test_contexts[1] = new StrictOrderTestContext(1);
 
   {
-    utime_t inc(100, 0);
-    utime_t t = ceph_clock_now(g_ceph_context) + inc;
+    utime_mono_t inc(100, 0);
+    utime_mono_t t = ceph_mono_clock_now(g_ceph_context) + inc;
     lock->Lock();
     timer.add_event_at(t, test_contexts[0]);
     lock->Unlock();
   }
 
   {
-    utime_t inc(2, 0);
-    utime_t t = ceph_clock_now(g_ceph_context) + inc;
+    utime_mono_t inc(2, 0);
+    utime_mono_t t = ceph_mono_clock_now(g_ceph_context) + inc;
     lock->Lock();
     timer.add_event_at(t, test_contexts[1]);
     lock->Unlock();
@@ -181,8 +181,8 @@ static int safe_timer_cancel_all_test(SafeTimer &safe_timer, Mutex& safe_timer_l
 
   safe_timer_lock.Lock();
   for (int i = 0; i < MAX_TEST_CONTEXTS; ++i) {
-    utime_t inc(4 * i, 0);
-    utime_t t = ceph_clock_now(g_ceph_context) + inc;
+    utime_mono_t inc(4 * i, 0);
+    utime_mono_t t = ceph_mono_clock_now(g_ceph_context) + inc;
     safe_timer.add_event_at(t, test_contexts[i]);
   }
   safe_timer_lock.Unlock();
@@ -219,8 +219,8 @@ static int safe_timer_cancellation_test(SafeTimer &safe_timer, Mutex& safe_timer
 
   safe_timer_lock.Lock();
   for (int i = 0; i < MAX_TEST_CONTEXTS; ++i) {
-    utime_t inc(4 * i, 0);
-    utime_t t = ceph_clock_now(g_ceph_context) + inc;
+    utime_mono_t inc(4 * i, 0);
+    utime_mono_t t = ceph_mono_clock_now(g_ceph_context) + inc;
     safe_timer.add_event_at(t, test_contexts[i]);
   }
   safe_timer_lock.Unlock();
