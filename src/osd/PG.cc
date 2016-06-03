@@ -157,6 +157,9 @@ void PGPool::update(OSDMapRef map)
   auid = pi->auid;
   name = map->get_pool_name(id);
   if (pi->get_snap_epoch() == map->get_epoch()) {
+    if (pi->get_last_tier_change() == map->get_epoch()) {
+      cached_removed_snaps.clear();
+    }
     pi->build_removed_snaps(newly_removed_snaps);
     newly_removed_snaps.subtract(cached_removed_snaps);
     cached_removed_snaps.union_of(newly_removed_snaps);
@@ -5321,6 +5324,9 @@ void PG::handle_advance_map(
 	   << dendl;
   update_osdmap_ref(osdmap);
   pool.update(osdmap);
+  if (pool.info.get_last_tier_change() == osdmap->get_epoch()) {
+    info.purged_snaps.clear();
+  }
   AdvMap evt(
     osdmap, lastmap, newup, up_primary,
     newacting, acting_primary);

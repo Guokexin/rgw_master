@@ -272,7 +272,7 @@ function test_tiering_agent()
   done
   $evicted # assert
   ceph osd tier remove-overlay $slow
-  ceph osd tier remove $slow $fast
+  ceph osd tier remove $slow $fast --force-nonempty
   ceph osd pool delete $fast $fast --yes-i-really-really-mean-it
   ceph osd pool delete $slow $slow --yes-i-really-really-mean-it
 }
@@ -345,7 +345,8 @@ function test_tiering()
   done
   expect_false ceph osd tier add slow cache2
   ceph osd tier add slow cache2 --force-nonempty
-  ceph osd tier remove slow cache2
+  expect_false ceph osd tier remove slow cache2
+  ceph osd tier remove slow cache2 --force-nonempty
 
   ceph osd pool ls | grep cache2
   ceph osd pool ls -f json-pretty | grep cache2
@@ -355,13 +356,29 @@ function test_tiering()
   ceph osd pool delete cache cache --yes-i-really-really-mean-it
   ceph osd pool delete cache2 cache2 --yes-i-really-really-mean-it
 
-  # make sure we can't clobber snapshot state
+  # clobber snapshot state when tier change
   ceph osd pool create snap_base 2
   ceph osd pool create snap_cache 2
   ceph osd pool mksnap snap_cache snapname
-  expect_false ceph osd tier add snap_base snap_cache
+  rados -p snap_cache lssnap | grep snapname
+  ceph osd tier add snap_base snap_cache
+  rados -p snap_cache lssnap | grep snapname && false || true
+  ceph osd pool mksnap snap_base snapname
+  rados -p snap_base lssnap | grep snapname
+  rados -p snap_cache lssnap | grep snapname && false || true
+  ceph osd tier remove snap_base snap_cache
+  rados -p snap_cache lssnap | grep snapname && false || true
   ceph osd pool delete snap_base snap_base --yes-i-really-really-mean-it
   ceph osd pool delete snap_cache snap_cache --yes-i-really-really-mean-it
+
+  # make sure we can't create snapshot on tier
+  ceph osd pool create base 2
+  ceph osd pool create cache 2
+  ceph osd tier add base cache
+  expect_false ceph osd pool mksnap cache snapname
+  ceph osd tier remove base cache
+  ceph osd pool delete base base --yes-i-really-really-mean-it
+  ceph osd pool delete cache cache --yes-i-really-really-mean-it
 
   # make sure we can't create an ec pool tier
   ceph osd pool create eccache 2 2 erasure
@@ -430,7 +447,7 @@ function test_tiering()
   ceph health | grep WARN | grep cache4
   ceph health detail | grep cache4 | grep 'target max' | grep objects
   ceph health detail | grep cache4 | grep 'target max' | grep 'B'
-  ceph osd tier remove datapool cache4
+  ceph osd tier remove datapool cache4 --force-nonempty
   ceph osd pool delete cache4 cache4 --yes-i-really-really-mean-it
   ceph osd pool delete datapool datapool --yes-i-really-really-mean-it
 
