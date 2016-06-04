@@ -394,6 +394,11 @@ unittest_bit_vector_CXXFLAGS = $(UNITTEST_CXXFLAGS)
 unittest_bit_vector_LDADD = $(UNITTEST_LDADD) $(CEPH_GLOBAL)
 check_PROGRAMS += unittest_bit_vector
 
+unittest_async_compressor_SOURCES = test/common/test_async_compressor.cc
+unittest_async_compressor_CXXFLAGS = $(UNITTEST_CXXFLAGS)
+unittest_async_compressor_LDADD = $(UNITTEST_LDADD) $(CEPH_GLOBAL) $(LIBCOMPRESSOR)
+check_PROGRAMS += unittest_async_compressor
+
 check_SCRIPTS += test/pybind/test_ceph_argparse.py
 
 ceph_test_objectcacher_stress_SOURCES = \
