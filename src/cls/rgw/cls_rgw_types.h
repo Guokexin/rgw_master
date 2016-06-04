@@ -76,11 +76,26 @@ struct rgw_bucket_dir_entry_meta {
   string content_type;
   uint64_t accounted_size;
 
-  rgw_bucket_dir_entry_meta() :
-  category(0), size(0), accounted_size(0) { mtime.set_from_double(0); }
+	/*Begin added by lujiafu*/
+	bool is_merged;
+	string data_pool;
+	string data_oid;
+	uint32_t index;
+	uint64_t data_offset;
+	uint64_t data_size;
+	/*End added*/
+
+  rgw_bucket_dir_entry_meta() : category(0), size(0), accounted_size(0),
+                                is_merged(false), index(0),
+                                data_offset(0), data_size(0) {
+    mtime.set_from_double(0);
+  }
 
   void encode(bufferlist &bl) const {
-    ENCODE_START(4, 3, bl);
+		/*Begin modified by lujiafu*/
+		//ENCODE_START(4, 3, bl);
+		ENCODE_START(5, 3, bl);
+		/*End modified*/
     ::encode(category, bl);
     ::encode(size, bl);
     ::encode(mtime, bl);
@@ -89,10 +104,21 @@ struct rgw_bucket_dir_entry_meta {
     ::encode(owner_display_name, bl);
     ::encode(content_type, bl);
     ::encode(accounted_size, bl);
+		/*Begin added by lujiafu*/
+		::encode(is_merged, bl);
+		::encode(data_pool, bl);
+		::encode(data_oid, bl);
+		::encode(index, bl);
+		::encode(data_offset, bl);
+		::encode(data_size, bl);
+		/*End added*/
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator &bl) {
-    DECODE_START_LEGACY_COMPAT_LEN(4, 3, 3, bl);
+		/*Begin modified by lujiafu*/
+    //DECODE_START_LEGACY_COMPAT_LEN(4, 3, 3, bl);
+		DECODE_START_LEGACY_COMPAT_LEN(5, 3, 3, bl);
+		/*End modified*/
     ::decode(category, bl);
     ::decode(size, bl);
     ::decode(mtime, bl);
@@ -105,6 +131,18 @@ struct rgw_bucket_dir_entry_meta {
       ::decode(accounted_size, bl);
     else
       accounted_size = size;
+
+		/*Begin added by lujiafu*/
+		if (struct_v >= 5)
+		{
+			::decode(is_merged, bl);
+			::decode(data_pool, bl);
+			::decode(data_oid, bl);
+			::decode(index, bl);
+			::decode(data_offset, bl);
+			::decode(data_size, bl);			
+		}
+		/*End added*/
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;

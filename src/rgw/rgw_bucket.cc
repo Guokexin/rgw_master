@@ -496,6 +496,306 @@ int RGWBucket::init(RGWRados *storage, RGWBucketAdminOpState& op_state)
   clear_failure();
   return 0;
 }
+/* Begin added by hechuang */
+int RGWBucket::acl(RGWBucketAdminOpState& op_state, std::string *err_msg)
+{
+  rgw_bucket bucket = op_state.get_bucket();
+  RGWObjectCtx obj_ctx(store);
+//  ACLGroupTypeEnum group;
+//  int perm;
+  string acl_str;
+  bufferlist aclbl;
+
+  RGWBucketInfo bucket_info;
+  map<string, bufferlist> attrs;
+  int ret = store->get_bucket_info(obj_ctx, bucket.name, bucket_info, NULL, &attrs);
+  if (ret < 0) {
+    return ret;
+  }
+  map<string, bufferlist>::iterator aiter = attrs.find(RGW_ATTR_ACL);
+  if (aiter == attrs.end()) {
+    return -ENOENT;
+  }
+  bufferlist::iterator i = aiter->second.begin();
+  RGWAccessControlPolicy_S3 s3policy(store->ctx());
+  acl_str = op_state.get_bucket_acl(); 
+  if (acl_str.empty()) {
+    set_err_msg(err_msg, "empty acl");
+    return -EINVAL;
+  }
+  
+/*  int pos = acl_str.find('=');
+  if (pos >= 0) {
+    if (0 == acl_str.substr(pos + 1).compare("alluser")){
+      group = ACL_GROUP_ALL_USERS;
+    }
+    if(0 == acl_str.substr(0, pos).compare("read")) {
+      perm = RGW_PERM_READ;
+    }
+      
+  }*/
+  s3policy.decode(i);
+  ACLOwner owner;
+
+  ret = s3policy.set_acl(owner, acl_str);
+  if (ret < 0) {
+    return ret;
+  }
+  RGWObjVersionTracker *ptracker = &bucket_info.objv_tracker;
+  s3policy.encode(aclbl);
+  map<string, bufferlist> attrs_acl;
+  attrs_acl[RGW_ATTR_ACL] = aclbl;
+  rgw_bucket_set_attrs(store, bucket_info, attrs_acl, NULL, ptracker);
+  //set_err_msg(err_msg, owner);
+  return 0;
+
+
+  
+}
+
+int RGWBucket::create(RGWRados *storage, RGWBucketAdminOpState& op_state, std::string *err_msg)
+{
+  if (!storage)
+    return -EINVAL;
+
+  store = storage;
+
+  string user_id = op_state.get_user_id();
+  if (!user_id.empty()) {
+    int r = rgw_get_user_info_by_uid(store, user_id, user_info);
+    if (r < 0)
+      return r;
+  }else {
+    set_err_msg(err_msg, "empty user id");
+    return -EINVAL;
+    
+  }
+  if (op_state.get_bucket_name().empty()) {
+    set_err_msg(err_msg, "empyt bucket name");
+    return -EINVAL;
+  }
+ 
+
+  //RGWAccessControlPolicy old_policy(s->cct);
+  RGWAccessControlPolicy policy(store->ctx());
+  map<string, bufferlist> attrs;
+  bufferlist aclbl;
+  bufferlist corsbl;
+  bool existed;
+  int ret;
+  string location_constraint;
+  string placement_rule;
+  //rgw_user user_id = op_state.get_user_id();
+  //tenant = user_id.tenant;
+  bucket_name = op_state.get_bucket_name();
+  //  add op_state.get_location_constraint()
+  location_constraint = op_state.get_bucket_location(); 
+  rgw_obj obj(store->zone.domain_root, bucket_name);
+  //obj_version objv, *pobjv = NULL;
+  int pos = location_constraint.find(':');
+  if (pos >= 0) {
+        placement_rule = location_constraint.substr(pos + 1);
+        location_constraint = location_constraint.substr(0, pos);
+      
+  }
+  if (!store->region.is_master &&
+    store->region.api_name != location_constraint) {
+   // ldout(s->cct, 0) << "location constraint (" << location_constraint << ") doesn't match region" << " (" << store->region.api_name << ")" << dendl;
+    ret = -EINVAL;
+    return ret;
+  }
+
+  /* we need to make sure we read bucket info, it's not read before for this specific request */
+  //RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);
+  RGWObjectCtx obj_ctx(store);
+  ret = store->get_bucket_info(obj_ctx, bucket_name,
+                               bucket_info, NULL);
+  if (ret != -ENOENT) {
+    set_err_msg(err_msg, "bucket exists");
+    return -EEXIST;
+  }
+  /*if (ret < 0 && ret != -ENOENT)
+    return;
+  }
+  s->bucket_exists = (ret != -ENOENT);
+
+  s->bucket_owner.set_id(s->user.user_id);
+  s->bucket_owner.set_name(s->user.display_name);
+  if (s->bucket_exists) {
+    int r = get_policy_from_attr(s->cct, store, s->obj_ctx, s->bucket_info, s->bucket_attrs,
+                                 &old_policy, obj);
+    if (r >= 0)  {
+      if (old_policy.get_owner().get_id().compare(s->user.user_id) != 0) {
+        ret = -EEXIST;
+        return;
+      }
+    }
+  }
+
+  RGWBucketInfo master_info;
+  rgw_bucket *pmaster_bucket;
+  time_t creation_time;
+
+  if (!store->region.is_master) {
+    JSONParser jp;
+    ret = forward_request_to_master(s, NULL, store, in_data, &jp);
+    if (ret < 0)
+      return;
+
+    JSONDecoder::decode_json("entry_point_object_ver", ep_objv, &jp);
+    JSONDecoder::decode_json("object_ver", objv, &jp);
+    JSONDecoder::decode_json("bucket_info", master_info, &jp);
+    ldout(s->cct, 20) << "parsed: objv.tag=" << objv.tag << " objv.ver=" << objv.ver << dendl;
+    ldout(s->cct, 20) << "got creation time: << " << master_info.creation_time << dendl;
+    pmaster_bucket= &master_info.bucket;
+    creation_time = master_info.creation_time;
+    pobjv = &objv;
+  } else {
+    pmaster_bucket = NULL;
+    creation_time = 0;
+  }
+
+  string region_name;
+
+  if (s->system_request) {
+    region_name = s->info.args.get(RGW_SYS_PARAM_PREFIX "region");
+    if (region_name.empty()) {
+      region_name = store->region.name;
+    }
+  } else {
+    region_name = store->region.name;
+  }
+
+  if (s->bucket_exists) {
+    string selected_placement_rule;
+    rgw_bucket bucket;
+    ret = store->select_bucket_placement(s->user, region_name, placement_rule,
+                                         s->bucket_tenant, s->bucket_name, bucket,
+                                         &selected_placement_rule);
+    if (selected_placement_rule != s->bucket_info.placement_rule) {
+      ret = -EEXIST;
+      return;
+    }
+  }
+*/
+  RGWAccessControlPolicy_S3 s3policy(store->ctx());
+  ACLOwner bucket_owner;
+  ACLOwner owner;
+  bucket_owner.set_id(user_info.user_id);
+  bucket_owner.set_name(user_info.display_name);
+
+  owner.set_id(user_info.user_id);
+  owner.set_name(user_info.display_name);
+  string canned_acl;
+  
+  ret = s3policy.create_canned(owner, bucket_owner, canned_acl);
+  if (ret < 0) {
+    set_err_msg(err_msg, "create_canned()");
+    return ret;
+  }
+  policy = s3policy;
+  policy.encode(aclbl);
+
+  attrs[RGW_ATTR_ACL] = aclbl;
+
+  /*if (has_cors) {
+    cors_config.encode(corsbl);
+    attrs[RGW_ATTR_CORS] = corsbl;
+  }*/
+  
+  rgw_bucket bucket;
+  RGWBucketInfo info;
+  obj_version ep_objv; 
+  string region_name = store->region.name;
+
+  //bucket.tenant = tenant; /* ignored if bucket exists */
+  bucket.name = bucket_name;
+  if (op_state.get_bucket_shards() >= 0) {
+    store->set_bucket_shards(op_state.get_bucket_shards());
+  }
+  ret = store->create_bucket(user_info, bucket, region_name, placement_rule, attrs, info, NULL,
+                             &ep_objv, 0, NULL, true);
+  /* continue if EEXIST and create_bucket will fail below.  this way we can recover
+   * from a partial create by retrying it. */
+  //ldout(s->cct, 20) << "rgw_create_bucket returned ret=" << ret << " bucket=" << s->bucket << dendl;
+
+  if (ret && ret != -EEXIST)
+    return ret;
+
+  existed = (ret == -EEXIST);
+
+  if (existed) {
+    /* bucket already existed, might have raced with another bucket creation, or
+     * might be partial bucket creation that never completed. Read existing bucket
+     * info, verify that the reported bucket owner is the current user.
+     * If all is ok then update the user's list of buckets.
+     * Otherwise inform client about a name conflict.
+     */
+    if (info.owner.compare(user_info.user_id) != 0) {
+      ret = -EEXIST;
+      return ret;
+    }
+    bucket = info.bucket;
+  }
+
+  ret = rgw_link_bucket(store, user_info.user_id, bucket, info.creation_time, false);
+  if (ret && !existed && ret != -EEXIST) {  /* if it exists (or previously existed), don't remove it! */
+    ret = rgw_unlink_bucket(store, user_info.user_id, bucket.name);
+    if (ret < 0) {
+      set_err_msg(err_msg, "WARNING: failed to unlink bucket");
+      //ldout(s->cct, 0) << "WARNING: failed to unlink bucket: ret=" << ret << dendl;
+    }
+  } else if (ret == -EEXIST || (ret == 0 && existed)) {
+    ret = -ERR_BUCKET_EXISTS;
+  }
+  return ret;
+}
+
+int RGWBucket::nocompress(RGWBucketAdminOpState& op_state, std::string *err_msg)
+{
+  bucket_info.bucket.compress = false;
+  int ret = store->put_bucket_instance_info(bucket_info, false, 0, NULL);
+  if (ret < 0) {
+    set_err_msg(err_msg, "non-compress error");
+    return ret;
+  }
+  return 0;
+}
+
+int RGWBucket::compress(RGWBucketAdminOpState& op_state, std::string *err_msg)
+{
+  bucket_info.bucket.compress = true;
+  int ret = store->put_bucket_instance_info(bucket_info, false, 0, NULL);
+  if (ret < 0) {
+    set_err_msg(err_msg, "compress error");
+    return ret;
+  }
+  return 0;
+}
+
+int RGWBucket::storage_policy(RGWBucketAdminOpState& op_state, std::string *err_msg)
+{
+  string location_constraint;
+  string placement_rule;
+  location_constraint = op_state.get_bucket_location(); 
+  if (location_constraint.empty())
+  {
+    return -EINVAL;
+  }
+  int pos = location_constraint.find(':');
+  if (pos >= 0) {
+        placement_rule = location_constraint.substr(pos + 1);
+      
+  }
+  bucket_info.placement_rule = placement_rule;
+  int ret = store->put_bucket_instance_info(bucket_info, false, 0, NULL);
+  if (ret < 0) {
+    set_err_msg(err_msg, "modify_storage_policy error");
+    return ret;
+  }
+  return 0;
+}
+/* End added */
 
 int RGWBucket::link(RGWBucketAdminOpState& op_state, std::string *err_msg)
 {
@@ -925,6 +1225,65 @@ int RGWBucketAdminOp::link(RGWRados *store, RGWBucketAdminOpState& op_state, str
 
 }
 
+/* Begin added by hechuang */
+int RGWBucketAdminOp::nocompress(RGWRados *store, RGWBucketAdminOpState& op_state, string *err)
+{
+  RGWBucket bucket;
+
+  int ret = bucket.init(store, op_state);
+  if (ret < 0)
+    return ret;
+
+  return bucket.nocompress(op_state, err);
+
+}
+
+int RGWBucketAdminOp::compress(RGWRados *store, RGWBucketAdminOpState& op_state, string *err)
+{
+  RGWBucket bucket;
+
+  int ret = bucket.init(store, op_state);
+  if (ret < 0)
+    return ret;
+
+  return bucket.compress(op_state, err);
+
+}
+
+int RGWBucketAdminOp::storage_policy(RGWRados *store, RGWBucketAdminOpState& op_state, string *err)
+{
+  RGWBucket bucket;
+
+  int ret = bucket.init(store, op_state);
+  if (ret < 0)
+    return ret;
+
+  return bucket.storage_policy(op_state, err);
+
+}
+
+int RGWBucketAdminOp::create(RGWRados *store, RGWBucketAdminOpState& op_state, string *err)
+{
+  RGWBucket bucket;
+  return bucket.create(store,op_state, err);
+
+}
+
+int RGWBucketAdminOp::acl(RGWRados *store, RGWBucketAdminOpState& op_state, string *err)
+{
+  RGWBucket bucket;
+
+  int ret = bucket.init(store, op_state);
+  if (ret < 0)
+    return ret;
+
+  ret = bucket.acl(op_state, err);
+  if (ret < 0)
+    return ret;
+
+  return 0;
+}
+/* End added */
 int RGWBucketAdminOp::check_index(RGWRados *store, RGWBucketAdminOpState& op_state,
                   RGWFormatterFlusher& flusher)
 {
@@ -1016,7 +1375,10 @@ static int bucket_stats(RGWRados *store, std::string&  bucket_name, Formatter *f
   formatter->open_object_section("stats");
   formatter->dump_string("bucket", bucket.name);
   formatter->dump_string("pool", bucket.data_pool);
+  formatter->dump_string("data_big_pool", bucket.data_big_pool);       //added by hechuang
+  formatter->dump_string("data_small_pool", bucket.data_small_pool);   //added by hechuang
   formatter->dump_string("index_pool", bucket.index_pool);
+  formatter->dump_bool("compress", bucket.compress); // add by hechuang
   formatter->dump_string("id", bucket.bucket_id);
   formatter->dump_string("marker", bucket.marker);
   formatter->dump_string("owner", bucket_info.owner);

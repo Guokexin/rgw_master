@@ -18,19 +18,31 @@ struct cls_user_bucket {
   std::string marker;
   std::string bucket_id;
   std::string data_extra_pool;
+  /* Begin added by hechuang */
+  std::string data_small_pool;
+  std::string data_big_pool;
+  int64_t obj_is_small_or_big;
+  bool compress;
+
+  cls_user_bucket() : obj_is_small_or_big(0), compress(false) {}
+  /* End added */
 
   void encode(bufferlist& bl) const {
-     ENCODE_START(7, 3, bl);
+     ENCODE_START(8, 3, bl);
     ::encode(name, bl);
     ::encode(data_pool, bl);
     ::encode(marker, bl);
     ::encode(bucket_id, bl);
     ::encode(index_pool, bl);
     ::encode(data_extra_pool, bl);
+    ::encode(data_small_pool, bl);     //modify by hechuang
+    ::encode(data_big_pool, bl);       //modify by hechuang
+    ::encode(obj_is_small_or_big, bl); //modify by hechuang
+    ::encode(compress, bl); //modify by hechuang
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& bl) {
-    DECODE_START_LEGACY_COMPAT_LEN(7, 3, 3, bl);
+    DECODE_START_LEGACY_COMPAT_LEN(8, 3, 3, bl);
     ::decode(name, bl);
     ::decode(data_pool, bl);
     if (struct_v >= 2) {
@@ -53,6 +65,13 @@ struct cls_user_bucket {
     if (struct_v >= 7) {
       ::decode(data_extra_pool, bl);
     }
+    if (struct_v >= 8) {          //modify by hechuang
+      ::decode(data_small_pool, bl);
+      ::decode(data_big_pool, bl);
+      ::decode(obj_is_small_or_big, bl);
+      ::decode(compress, bl);
+    }
+
     DECODE_FINISH(bl);
   }
 

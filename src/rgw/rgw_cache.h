@@ -226,6 +226,11 @@ public:
   void register_chained_cache(RGWChainedCache *cc) {
     cache.chain_cache(cc);
   }
+  /* Begin added by hechuang */
+  void invalidate_all() {
+    cache.invalidate_all();
+  }
+  /* End added */
 
   int set_attr(void *ctx, rgw_obj& obj, const char *name, bufferlist& bl, RGWObjVersionTracker *objv_tracker);
   int set_attrs(void *ctx, rgw_obj& obj, 

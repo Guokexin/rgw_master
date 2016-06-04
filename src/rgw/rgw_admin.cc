@@ -65,6 +65,11 @@ void _usage()
   cerr << "  bucket stats               returns bucket statistics\n";
   cerr << "  bucket rm                  remove bucket\n";
   cerr << "  bucket check               check bucket index\n";
+  cerr << "  bucket create              create a new bucket for specified user\n";            /* Begin added by hechuang */
+  cerr << "  bucket acl                 set bucket acl\n";                          
+  //cerr << "  bucket compress            set bucket compress\n";
+  //cerr << "  bucket non-compress        set bucket no compress\n";
+  cerr << "  bucket modify_storage_policy        set bucket storage_policy\n";                /* End added */
   cerr << "  object rm                  remove object\n";
   cerr << "  object unlink              unlink object from bucket index\n";
   cerr << "  quota set                  set quota params\n";
@@ -129,6 +134,13 @@ void _usage()
   cerr << "   --display-name=<name>\n";
   cerr << "   --max_buckets             max number of buckets for a user\n";
   cerr << "   --system                  set the system flag on the user\n";
+  /*added by hechuang*/
+  cerr << "   --bucket_location         bucket policy(e.g., --bucket_location=default:test)\n";
+  cerr << "   --bucket_acl              set the bucket acl for a bucket\n";
+  cerr << "                             (e.g., --bucket_acl=\"alluser=read,write;authuser=*\")\n"; 
+  cerr << "                             [owner|authuser|alluser]=[read,write,read_acp,write_acp,*]\n";
+  cerr << "   --bucket_shards           set the bucket shards num for a bucket\n";
+  /*end added*/
   cerr << "   --bucket=<bucket>\n";
   cerr << "   --pool=<pool>\n";
   cerr << "   --object=<object>\n";
@@ -217,6 +229,13 @@ enum {
   OPT_BUCKET_CHECK,
   OPT_BUCKET_RM,
   OPT_BUCKET_REWRITE,
+  /* Begin added by hechuang */
+  OPT_BUCKET_ACL,
+  OPT_BUCKET_MODIFY_STORAGE_POLICY,
+  OPT_BUCKET_NOCOMPRESS,
+  OPT_BUCKET_COMPRESS,
+  OPT_BUCKET_CREATE,
+  /* End added */
   OPT_POLICY,
   OPT_POOL_ADD,
   OPT_POOL_RM,
@@ -362,6 +381,18 @@ static int get_cmd(const char *cmd, const char *prev_cmd, bool *need_more)
       return OPT_BUCKET_REWRITE;
     if (strcmp(cmd, "check") == 0)
       return OPT_BUCKET_CHECK;
+    /* Begin added by hechuang */
+    if (strcmp(cmd, "acl") == 0)
+      return OPT_BUCKET_ACL;
+    if (strcmp(cmd, "modify_storage_policy") == 0)
+      return OPT_BUCKET_MODIFY_STORAGE_POLICY;
+    if (strcmp(cmd, "compress") == 0)
+      return OPT_BUCKET_COMPRESS;
+    if (strcmp(cmd, "non-compress") == 0)
+      return OPT_BUCKET_NOCOMPRESS;
+    if (strcmp(cmd, "create") == 0)
+      return OPT_BUCKET_CREATE;
+    /* End added */
   } else if (strcmp(prev_cmd, "log") == 0) {
     if (strcmp(cmd, "list") == 0)
       return OPT_LOG_LIST;
@@ -1087,6 +1118,10 @@ int main(int argc, char **argv)
 
   std::string user_id, access_key, secret_key, user_email, display_name;
   std::string bucket_name, pool_name, object;
+  /* Begin added by hechuang */
+  std::string bucket_location, bucket_acl;
+  int bucket_shards = -1; 
+  /* End added */
   std::string date, subuser, access, format;
   std::string start_date, end_date;
   std::string key_type_str;
@@ -1186,6 +1221,12 @@ int main(int argc, char **argv)
       user_email = val;
     } else if (ceph_argparse_witharg(args, i, &val, "-n", "--display-name", (char*)NULL)) {
       display_name = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--bucket_location", (char*)NULL)) {    //added byhechuang
+      bucket_location = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--bucket_acl", (char*)NULL)) {
+      bucket_acl = val;                         
+    } else if (ceph_argparse_witharg(args, i, &val, "--bucket_shards", (char*)NULL)) {
+      bucket_shards = atoi(val.c_str());                         // End added
     } else if (ceph_argparse_witharg(args, i, &val, "-b", "--bucket", (char*)NULL)) {
       bucket_name = val;
     } else if (ceph_argparse_witharg(args, i, &val, "-p", "--pool", (char*)NULL)) {
@@ -1723,6 +1764,11 @@ int main(int argc, char **argv)
 
   /* populate bucket operation */
   bucket_op.set_bucket_name(bucket_name);
+  /* Begin added by hechuang */
+  bucket_op.set_bucket_location(bucket_location);
+  bucket_op.set_bucket_acl(bucket_acl);
+  bucket_op.set_bucket_shards(bucket_shards);
+  /* End added */
   bucket_op.set_object(object);
   bucket_op.set_check_objects(check_objects);
   bucket_op.set_delete_children(delete_child_objects);
@@ -1906,6 +1952,66 @@ int main(int argc, char **argv)
 
     RGWBucketAdminOp::info(store, bucket_op, f);
   }
+
+/* Begin added by hechuang */
+  if (opt_cmd == OPT_BUCKET_ACL) {
+    string err;
+    int r = RGWBucketAdminOp::acl(store, bucket_op, &err);
+    cerr << "r="<< r <<" err=" << err << std::endl;
+    if (r < 0) {
+      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      return -r;
+    }
+
+  }
+
+  if (opt_cmd == OPT_BUCKET_NOCOMPRESS) {
+    string err;
+    int r = RGWBucketAdminOp::nocompress(store, bucket_op, &err);
+    if (r < 0) {
+      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      return -r;
+    }
+
+  }
+
+  if (opt_cmd == OPT_BUCKET_COMPRESS) {
+    string err;
+    int r = RGWBucketAdminOp::compress(store, bucket_op, &err);
+    if (r < 0) {
+      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      return -r;
+    }
+
+  }
+
+  if (opt_cmd == OPT_BUCKET_MODIFY_STORAGE_POLICY) {
+    string err;
+    int r = RGWBucketAdminOp::storage_policy(store, bucket_op, &err);
+    if (r < 0) {
+      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      return -r;
+    }
+
+  }
+
+  if (opt_cmd == OPT_BUCKET_CREATE) {
+    string err;
+    int r = RGWBucketAdminOp::create(store, bucket_op, &err);
+    if (r < 0) {
+      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      return -r;
+    }
+    if (!bucket_acl.empty()) {
+      cerr << "create bucket acl" << std::endl;
+      r = RGWBucketAdminOp::acl(store, bucket_op, &err);
+      if (r < 0) {
+        cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+        return -r;
+      }
+    }
+  }
+  /* End added */
 
   if (opt_cmd == OPT_BUCKET_LINK) {
     bucket_op.set_bucket_id(bucket_id);

@@ -6,6 +6,7 @@
 
 #include <sstream>
 
+#include "common/errno.h"
 #include "common/Clock.h"
 #include "common/armor.h"
 #include "common/mime.h"
@@ -452,6 +453,13 @@ static void rgw_bucket_object_pre_exec(struct req_state *s)
 
 int RGWGetObj::verify_permission()
 {
+  /*Begin added by lujiafu*/
+  if (s->merge_ref.bi_entry.meta.is_merged)
+  {
+    return 0;
+  }
+  /*End added*/
+
   obj = rgw_obj(s->bucket, s->object);
   store->set_atomic(s->obj_ctx, obj);
   if (get_data)
@@ -919,6 +927,75 @@ void RGWGetObj::execute()
   ret = init_common();
   if (ret < 0)
     goto done_err;
+
+  /*Begin added by lujiafu*/
+  if (!s->merge_ref.is_checked)
+  {
+    store->obj_is_merged(s->bucket, obj, s->merge_ref);
+  }
+  
+  if (s->merge_ref.bi_entry.meta.is_merged)
+  {
+    ldout(s->cct, 10) << "redirect read data:" << ofs << "," << end << dendl;
+    bufferlist bl_data;
+    int r = store->read_obj_redirect(s->merge_ref, 
+                                     &attrs, &lastmod, &total_len, 
+                                     &s->obj_size, ofs, end, get_data, bl_data);
+    ldout(s->cct, 10) << "redirect read result:" << r << "," << bl_data.length() << ", " << (get_data ? "true" : "false") << dendl;
+    if (r < 0)
+    {
+      send_response_data(bl_data, 0, 0);
+      return;
+    }
+    else
+    {
+      start = ofs;
+      if (!get_data || ofs > end)
+      {
+        send_response_data(bl_data, 0, 0);
+        return;
+      }
+      
+      perfcounter->inc(l_rgw_get_b, end - ofs);
+      
+     
+      perfcounter->tinc(l_rgw_get_lat,
+                       (ceph_clock_now(s->cct) - start_time));
+
+      uint64_t send_step = 0, sent_size = 0;
+      uint64_t leave_size = bl_data.length();
+      uint64_t max_chunk_size = s->cct->_conf->rgw_get_obj_max_req_size;
+      ret = 0;
+     
+      do
+      {
+        send_step = MIN(max_chunk_size, leave_size);
+        r = send_response_data(bl_data, sent_size, send_step);
+        if (ret < 0) 
+        {
+          ldout(s->cct, 0) << "read data error:"
+                           << " offset=" << sent_size
+                           << " send_size=" << send_step
+                           << "(" << ret << ":" << cpp_strerror(ret) << ")" << dendl;
+          send_response_data(bl_data, 0, 0);
+          return;
+        }
+        ldout(s->cct, 10) << "send data success:"
+                         << " offset=" << sent_size
+                         << " send_size=" << send_step
+                         << dendl;        
+        leave_size -= send_step;
+        sent_size += send_step;
+      }while (leave_size > 0);
+
+      ldout(s->cct, 10) << "send response success" << dendl;
+    }
+    r = send_response_data(bl_data, 0, 0); 
+    if (r < 0) 
+      send_response_data(bl_data, 0, 0);    
+    return;
+  }
+  /*End added*/
 
   new_ofs = ofs;
   new_end = end;
@@ -1523,7 +1600,10 @@ protected:
 public:
   bool immutable_head() { return true; }
   RGWPutObjProcessor_Multipart(RGWObjectCtx& obj_ctx, RGWBucketInfo& bucket_info, uint64_t _p, req_state *_s) :
-                   RGWPutObjProcessor_Atomic(obj_ctx, bucket_info, _s->bucket, _s->object.name, _p, _s->req_id, false), s(_s) {}
+  RGWPutObjProcessor_Atomic(obj_ctx, bucket_info, _s->bucket, _s->object.name, _p, _s->req_id, false), s(_s) {
+    set_content_length(s->bucket.obj_is_small_or_big+1);  //added by hechuang
+    set_need_compress(s->bucket.compress);  //added by hechuang
+  }
 };
 
 int RGWPutObjProcessor_Multipart::prepare(RGWRados *store, string *oid_rand)
@@ -1577,6 +1657,7 @@ int RGWPutObjProcessor_Multipart::prepare(RGWRados *store, string *oid_rand)
 
   head_obj = manifest_gen.get_cur_obj();
   head_obj.index_hash_source = obj_str;
+  head_obj.set_in_big_data(true);    // added by hechuang
   cur_obj = head_obj;
 
   return 0;
@@ -1596,6 +1677,7 @@ int RGWPutObjProcessor_Multipart::do_complete(string& etag, time_t *mtime, time_
 {
   complete_writing_data();
 
+  head_obj.set_in_big_data(true);   //added by hechuang
   RGWRados::Object op_target(store, s->bucket_info, obj_ctx, head_obj);
   RGWRados::Object::Write head_obj_op(&op_target);
 
@@ -1656,7 +1738,47 @@ RGWPutObjProcessor *RGWPutObj::select_processor(RGWObjectCtx& obj_ctx, bool *is_
     processor = new RGWPutObjProcessor_Atomic(obj_ctx, s->bucket_info, s->bucket, s->object.name, part_size, s->req_id, s->bucket_info.versioning_enabled());
     ((RGWPutObjProcessor_Atomic *)processor)->set_olh_epoch(olh_epoch);
     ((RGWPutObjProcessor_Atomic *)processor)->set_version_id(version_id);
+    ((RGWPutObjProcessor_Atomic *)processor)->set_content_length(s->content_length);   //added by hechuang
+    ((RGWPutObjProcessor_Atomic *)processor)->set_need_compress(s->bucket.compress);   //added by hechuang
   } else {
+    /* Begin added by hechuang */
+    string meta_oid;
+    rgw_obj meta_obj;
+    RGWMPObj mp;
+    RGWBucketInfo temp_bucket_info;
+    map<string, bufferlist> attrs;
+    string upload_id;
+    upload_id = s->info.args.get("uploadId");
+    mp.init(s->object.name, upload_id);
+    meta_oid = mp.get_meta();
+    meta_obj.init_ns(s->bucket, meta_oid, mp_ns);
+    meta_obj.set_in_extra_data(true);
+    meta_obj.index_hash_source = s->object.name;
+
+    int ret = get_obj_attrs(store, s, meta_obj, attrs);
+    if (ret < 0) {
+      ldout(s->cct, 0) << "ERROR: failed to get obj attrs, obj=" << meta_obj << " ret=" << ret << dendl;
+      return NULL; 
+    }
+    map<string, bufferlist>::iterator iter =  attrs.find(RGW_ATTR_BUCKET_INFO);;
+    if (iter != attrs.end())
+    {
+      bufferlist::iterator iterbl = iter->second.begin();
+      try {
+        ::decode(temp_bucket_info,iterbl);
+      }catch (buffer::error& err) {
+        ldout(s->cct, 0) << "ERROR: could not decode buffer info, caught buffer::error" << dendl;
+        return NULL; 
+      }
+      s->bucket_info = temp_bucket_info;
+      s->bucket = temp_bucket_info.bucket;
+    } else {
+      
+      ldout(s->cct, 0) << "ERROR: select_processor() attrs.find(RGW_ATTR_BUCKET_INFO) = attrs.end() " << meta_obj << dendl;
+      return NULL;
+    }
+
+    /* End added */
     processor = new RGWPutObjProcessor_Multipart(obj_ctx, s->bucket_info, part_size, s);
   }
 
@@ -1787,7 +1909,12 @@ void RGWPutObj::execute()
   }
 
   processor = select_processor(*(RGWObjectCtx *)s->obj_ctx, &multipart);
-
+  /* Begin added by hechuang */
+  if (NULL == processor) {
+    ret = -EIO;
+    goto done;
+  }
+  /* End added */
   ret = processor->prepare(store, NULL);
   if (ret < 0)
     goto done;
@@ -1941,6 +2068,8 @@ RGWPutObjProcessor *RGWPostObj::select_processor(RGWObjectCtx& obj_ctx)
   uint64_t part_size = s->cct->_conf->rgw_obj_stripe_size;
 
   processor = new RGWPutObjProcessor_Atomic(obj_ctx, s->bucket_info, s->bucket, s->object.name, part_size, s->req_id, s->bucket_info.versioning_enabled());
+  ((RGWPutObjProcessor_Atomic *)processor)->set_content_length(s->content_length);    //added by hechuang
+  ((RGWPutObjProcessor_Atomic *)processor)->set_need_compress(s->bucket.compress);    //added by hechuang
 
   return processor;
 }
@@ -2204,6 +2333,24 @@ void RGWDeleteObj::execute()
   ret = -EINVAL;
   rgw_obj obj(s->bucket, s->object);
   if (!s->object.empty()) {
+
+    /*Begin added by lujiafu*/
+    //if (!s->merge_ref.is_checked)
+    {
+      store->obj_is_merged(s->bucket, obj, s->merge_ref);
+    }
+    
+    if (s->merge_ref.bi_entry.meta.is_merged)
+    {
+      ret = store->delete_obj_redirect(s->bucket, obj, s->merge_ref);
+      if (ret < 0)
+        ldout(s->cct, 0) << "delete merged object failed:" << cpp_strerror(ret) << dendl;
+        
+      ldout(s->cct, 10) << "delete merged object success" << dendl;
+      return;
+    }
+    /*End added*/
+    
     RGWObjectCtx *obj_ctx = (RGWObjectCtx *)s->obj_ctx;
 
     obj_ctx->set_atomic(obj);
@@ -2778,6 +2925,11 @@ void RGWInitMultipart::execute()
   policy.encode(aclbl);
 
   attrs[RGW_ATTR_ACL] = aclbl;
+  /* Begin added by hechuang */
+  bufferlist info_bl;
+  ::encode(s->bucket_info,info_bl);
+  attrs[RGW_ATTR_BUCKET_INFO] = info_bl;
+  /* End added */
 
   for (iter = s->generic_attrs.begin(); iter != s->generic_attrs.end(); ++iter) {
     bufferlist& attrbl = attrs[iter->first];
@@ -3035,6 +3187,25 @@ void RGWCompleteMultipart::execute()
     ldout(s->cct, 0) << "ERROR: failed to get obj attrs, obj=" << meta_obj << " ret=" << ret << dendl;
     return;
   }
+  /* Begin added by hechuang */
+  RGWBucketInfo temp_bucket_info;
+  map<string, bufferlist>::iterator iter_attrs =  attrs.find(RGW_ATTR_BUCKET_INFO);;
+  if (iter_attrs != attrs.end())
+  {
+    bufferlist::iterator iterbl = iter_attrs->second.begin();
+    try {
+      ::decode(temp_bucket_info,iterbl);
+    }catch (buffer::error& err) {
+      ldout(s->cct, 0) << "ERROR: could not decode buffer info, caught buffer::error" << dendl;
+      return; 
+    }
+    s->bucket_info = temp_bucket_info;
+    s->bucket = temp_bucket_info.bucket;
+  } else {
+    
+    ldout(s->cct, 0) << "ERROR: select_processor() attrs.find(RGW_ATTR_BUCKET_INFO) = attrs.end() " << meta_obj << dendl;
+  }
+  /* End added */
 
   do {
     ret = list_multipart_parts(store, s, upload_id, meta_oid, max_parts, marker, obj_parts, &marker, &truncated);
@@ -3114,6 +3285,10 @@ void RGWCompleteMultipart::execute()
     store->gen_rand_obj_instance_name(&target_obj);
   }
 
+  /*Begin added by lujiafu*/
+  store->obj_is_merged(s->bucket, target_obj, s->merge_ref);
+  /*End added*/
+  
   RGWObjectCtx& obj_ctx = *(RGWObjectCtx *)s->obj_ctx;
 
   obj_ctx.set_atomic(target_obj);
@@ -3131,6 +3306,14 @@ void RGWCompleteMultipart::execute()
   ret = obj_op.write_meta(ofs, attrs);
   if (ret < 0)
     return;
+
+  /*Begin added by lujiafu*/
+  if (s->merge_ref.bi_entry.meta.is_merged)
+  {
+    store->set_sfm_delete_flag(s->merge_ref);
+  }
+  store->write_bgt_change_log(s->bucket_info.bucket, target_obj, ofs);
+  /*End added*/
 
   // remove the upload obj
   int r = store->delete_obj(*(RGWObjectCtx *)s->obj_ctx, s->bucket_info, meta_obj, 0);
@@ -3447,7 +3630,26 @@ int RGWHandler::do_read_permissions(RGWOp *op, bool only_bucket)
     ldout(s->cct, 10) << "read_permissions on " << s->bucket << ":" <<s->object << " only_bucket=" << only_bucket << " ret=" << ret << dendl;
     if (ret == -ENODATA)
       ret = -EACCES;
+/*Begin added by lujiafu*/      
+    else if (-ENOENT== ret)
+    {
+      rgw_obj obj(s->bucket, s->object);
+      if (store->obj_is_merged(s->bucket, obj, s->merge_ref))
+      {
+        ldout(s->cct, 10) << "read_permissions on " << s->bucket << ":" << s->object << ", obj is merged to:" 
+                         << s->merge_ref.bi_entry.meta.data_pool << "/" 
+                         << s->merge_ref.bi_entry.meta.data_oid << ", index=" 
+                         << s->merge_ref.bi_entry.meta.index << ", offset=" 
+                         << s->merge_ref.bi_entry.meta.data_offset << "size=" 
+                         << s->merge_ref.bi_entry.meta.data_size << dendl;
+        ret = 0;
+      }
+    }
+/*End added*/       
   }
+  /*Begin added by lujiafu*/
+  s->merge_ref.is_checked = true;
+  /*End added*/
 
   return ret;
 }

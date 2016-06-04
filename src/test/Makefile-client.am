@@ -8,7 +8,8 @@ ceph_dencoder_LDADD = \
 	$(LIBOS_TYPES) \
 	$(LIBMON_TYPES) \
 	$(DENCODER_DEPS) \
-	$(CEPH_GLOBAL)
+	$(CEPH_GLOBAL) \
+	$(LIBRADOS)
 
 # These should always use explicit _CFLAGS/_CXXFLAGS so avoid basename conflicts
 ceph_dencoder_CFLAGS = ${AM_CFLAGS}

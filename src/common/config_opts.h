@@ -1033,6 +1033,8 @@ OPTION(rgw_op_thread_suicide_timeout, OPT_INT, 0)
 OPTION(rgw_thread_pool_size, OPT_INT, 100)
 OPTION(rgw_num_control_oids, OPT_INT, 8)
 OPTION(rgw_num_rados_handles, OPT_U32, 1)
+//added by guokexin
+OPTION(rgw_num_rados_handles_2, OPT_U32, 1)
 
 OPTION(rgw_zone, OPT_STR, "") // zone name
 OPTION(rgw_zone_root_pool, OPT_STR, ".rgw.root")    // pool where zone specific info is stored
@@ -1099,7 +1101,19 @@ OPTION(rgw_multipart_min_part_size, OPT_INT, 5 * 1024 * 1024) // min size for ea
 
 OPTION(rgw_olh_pending_timeout_sec, OPT_INT, 3600) // time until we retire a pending olh change
 OPTION(rgw_user_max_buckets, OPT_U32, 1000) // global option to set max buckets count for all user
-
+/* Begin added by lujiafu */
+OPTION(rgw_role_type, OPT_U32, 0) // role type: scheduler(2), worker(4), merger(8)
+OPTION(rgw_bgt_pool, OPT_STR, "") // set the background task pool
+OPTION(rgw_bgt_archive_pool, OPT_STR, "") //set the archieve pool
+OPTION(rgw_bgt_tick_interval, OPT_U32, 1000) //set the tick interval in ms
+OPTION(rgw_bgt_change_log_check_interval, OPT_U32, 300) //set the interval of change log size checking, in second
+OPTION(rgw_bgt_change_log_max_size, OPT_U32, 128) //set the max size of change log obj, in MB
+OPTION(rgw_bgt_change_log_max_shard, OPT_U32, 1024) //set change log max shards
+OPTION(rgw_bgt_merged_obj_size, OPT_U32, 16) //set the merged object size, just reference, in MB
+OPTION(rgw_bgt_merged_src_obj_max_size, OPT_U32, 1 << 20) //set the max size of obj which can be merged, in Bytes
+OPTION(rgw_bgt_notify_timeout, OPT_U32, 10000) //set the notify timeout between bgt instance obj, in ms
+OPTION(rgw_primary_pool,OPT_STR,"ssd_pool") //set the system pool, it must be exist.
+/* End added */
 OPTION(mutex_perf_counter, OPT_BOOL, false) // enable/disable mutex perf counter
 OPTION(throttler_perf_counter, OPT_BOOL, true) // enable/disable throttler perf counter
 

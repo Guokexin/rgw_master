@@ -334,7 +334,75 @@ static int parse_acl_header(RGWRados *store, RGWEnv *env,
 
   return 0;
 }
+/* Begin added by hechuang */
+int RGWAccessControlList_S3::set_acl(ACLOwner& owner,string acl_str)
+{
+  acl_user_map.clear();
+  grant_map.clear();
+  ACLGrant new_grant;
+  string acl_group;
+  string acl_op;
+  ACLGroupTypeEnum group;
+  map<ACLGroupTypeEnum, int> acl_map;
+  int start = 0;
+  do {
+    int end = acl_str.find(';', start);
+    if (end < 0)
+      end = acl_str.size();
+    acl_group = acl_str.substr(start, end-start); 
+    int pos = acl_group.find('=');
+    if (pos >= 0) {
+      acl_op = acl_group.substr(pos+1);
+      int start_acl_op = 0;
+      do {
+        int acl_perm;
 
+        int end_acl_op = acl_op.find(',', start_acl_op);
+        if (end_acl_op < 0) {
+          end_acl_op = acl_op.size();
+        }  
+        if(0 == acl_op.substr(start_acl_op,end_acl_op-start_acl_op).compare("read")) {
+          acl_perm = RGW_PERM_READ;
+        }else if (0 == acl_op.substr(start_acl_op,end_acl_op-start_acl_op).compare("write")) {
+          acl_perm = RGW_PERM_WRITE;
+        }else if (0 == acl_op.substr(start_acl_op,end_acl_op-start_acl_op).compare("write_acp")) {
+          acl_perm = RGW_PERM_WRITE_ACP;
+        }else if (0 == acl_op.substr(start_acl_op,end_acl_op-start_acl_op).compare("read_acp")) {
+          acl_perm = RGW_PERM_READ_ACP;
+        }else if (0 == acl_op.substr(start_acl_op,end_acl_op-start_acl_op).compare("*")) {
+          acl_perm = RGW_PERM_FULL_CONTROL;
+        }else {
+          return  -EINVAL;
+        } 
+
+        if (0 == acl_group.substr(0, pos).compare("alluser")) {
+          group = ACL_GROUP_ALL_USERS;
+          new_grant.set_group(group, acl_perm); 
+        }else if (0 == acl_group.substr(0, pos).compare("authuser")) {
+          group = ACL_GROUP_AUTHENTICATED_USERS;
+          new_grant.set_group(group, acl_perm); 
+        }else if (0 == acl_group.substr(0, pos).compare("owner")) {
+          new_grant.set_canon(owner.get_id(), owner.get_display_name(), acl_perm); 
+        }else {
+          return  -EINVAL;
+        }
+        
+        
+
+        start_acl_op = end_acl_op + 1;
+        add_grant(&new_grant); 
+      } while (start_acl_op < (int)acl_op.size());
+    }else {
+      return  -EINVAL;
+    }
+
+    start = end + 1;
+  } while (start < (int)acl_str.size());
+
+  return 0;
+  
+}
+/* End added */
 int RGWAccessControlList_S3::create_canned(ACLOwner& owner, ACLOwner& bucket_owner, const string& canned_acl)
 {
   acl_user_map.clear();
