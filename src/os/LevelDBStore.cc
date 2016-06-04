@@ -184,15 +184,15 @@ int LevelDBStore::get(
     const std::set<string> &keys,
     std::map<string, bufferlist> *out)
 {
-  KeyValueDB::Iterator it = get_iterator(prefix);
   for (std::set<string>::const_iterator i = keys.begin();
        i != keys.end();
        ++i) {
-    it->lower_bound(*i);
-    if (it->valid() && it->key() == *i) {
-      out->insert(make_pair(*i, it->value()));
-    } else if (!it->valid())
-      break;
+    std::string value;
+    std::string bound = combine_strings(prefix, *i);
+    leveldb::Status status = db->Get(leveldb::ReadOptions(), leveldb::Slice(bound), &value);
+    if (status.ok()) {
+      (*out)[*i].append(value);
+    }
   }
   logger->inc(l_leveldb_gets);
   return 0;
