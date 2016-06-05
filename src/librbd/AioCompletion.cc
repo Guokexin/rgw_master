@@ -90,9 +90,7 @@ namespace librbd {
 
     done = true;
     if (complete_cb) {
-      lock.Unlock();
       complete_cb(rbd_comp, complete_arg);
-      lock.Lock();
     }
 
     if (ictx && event_notify && ictx->event_socket.is_valid()) {
@@ -143,23 +141,11 @@ namespace librbd {
   }
 
   bool AioCompletion::is_complete() {
-    tracepoint(librbd, aio_is_complete_enter, this);
-    bool done;
-    {
-      Mutex::Locker l(lock);
-      done = this->done;
-    }
-    tracepoint(librbd, aio_is_complete_exit, done);
     return done;
   }
 
   ssize_t AioCompletion::get_return_value() {
-    tracepoint(librbd, aio_get_return_value_enter, this);
-    lock.Lock();
-    ssize_t r = rval;
-    lock.Unlock();
-    tracepoint(librbd, aio_get_return_value_exit, r);
-    return r;
+    return rval;
   }
 
   void C_AioRead::finish(int r)
