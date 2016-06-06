@@ -1234,7 +1234,12 @@ int main(int argc, const char **argv)
       derr << "ERROR: failed initializing frontend" << dendl;
       return -r;
     }
-    fe->run();
+    r = fe->run();
+    if (r < 0)
+    {
+      derr << "ERROR: failed initializing frontend" << dendl;
+      return -r;
+    }
 
     fes.push_back(fe);
   }
