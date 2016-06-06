@@ -22,6 +22,9 @@
     bucket stats               returns bucket statistics
     bucket rm                  remove bucket
     bucket check               check bucket index
+    bucket create              create a new bucket for specified user
+    bucket acl                 set bucket acl
+    bucket modify_storage_policy        set bucket storage_policy
     object rm                  remove object
     object unlink              unlink object from bucket index
     quota set                  set quota params
@@ -86,6 +89,11 @@
      --display-name=<name>
      --max_buckets             max number of buckets for a user
      --system                  set the system flag on the user
+     --bucket_location         bucket policy(e.g., --bucket_location=default:test)
+     --bucket_acl              set the bucket acl for a bucket
+                               (e.g., --bucket_acl="alluser=read,write;authuser=*")
+                               [owner|authuser|alluser]=[read,write,read_acp,write_acp,*]
+     --bucket_shards           set the bucket shards num for a bucket
      --bucket=<bucket>
      --pool=<pool>
      --object=<object>
@@ -145,3 +153,4 @@
     --version         show version and quit
   
   [1]
+

@@ -35,6 +35,11 @@
 #include "cls/user/cls_user_types.h"
 #include "cls/rgw/cls_rgw_types.h"
 #include "include/rados/librados.hpp"
+/* Begin added by hechuang */
+#include "compressor/AsyncCompressor.h"
+
+extern AsyncCompressor* ac;
+/* End added */
 
 using namespace std;
 
@@ -69,6 +74,9 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_SHADOW_OBJ    	RGW_ATTR_PREFIX "shadow_name"
 #define RGW_ATTR_MANIFEST    	RGW_ATTR_PREFIX "manifest"
 #define RGW_ATTR_USER_MANIFEST  RGW_ATTR_PREFIX "user_manifest"
+/* Begin added by hechuang */
+#define RGW_ATTR_BUCKET_INFO    RGW_ATTR_PREFIX "temp_bucket_info"
+/* End added */
 
 #define RGW_ATTR_OLH_PREFIX     RGW_ATTR_PREFIX "olh."
 
@@ -584,52 +592,72 @@ struct rgw_bucket {
   std::string name;
   std::string data_pool;
   std::string data_extra_pool; /* if not set, then we should use data_pool instead */
+  /* Begin added by hechuang */
+  std::string data_small_pool; /* if not set, then we should use data_pool instead */
+  std::string data_big_pool; /* if not set, then we should use data_pool instead */
+  int64_t obj_is_small_or_big;
+  /* End added */
+
   std::string index_pool;
   std::string marker;
   std::string bucket_id;
-
+  /* Begin added by hechuang */
+  bool compress;
+  /* End added */
   std::string oid; /*
                     * runtime in-memory only info. If not empty, points to the bucket instance object
                     */
 
-  rgw_bucket() { }
+  rgw_bucket() : obj_is_small_or_big(0), compress(false) { } //modify by hechuang
   rgw_bucket(const cls_user_bucket& b) {
     name = b.name;
     data_pool = b.data_pool;
     data_extra_pool = b.data_extra_pool;
+    data_small_pool = b.data_small_pool ;    //modify by hechuang
+    data_big_pool = b.data_big_pool;         //modify by hechuang
+    obj_is_small_or_big = b.obj_is_small_or_big;   //modify by hechuang
     index_pool = b.index_pool;
     marker = b.marker;
     bucket_id = b.bucket_id;
+    compress = b.compress;             //modify by hechuang
   }
-  rgw_bucket(const char *n) : name(n) {
+  rgw_bucket(const char *n) : name(n), obj_is_small_or_big(0), compress(false) {   //modify by hechuang
     assert(*n == '.'); // only rgw private buckets should be initialized without pool
     data_pool = index_pool = n;
     marker = "";
   }
   rgw_bucket(const char *n, const char *dp, const char *ip, const char *m, const char *id, const char *h) :
-    name(n), data_pool(dp), index_pool(ip), marker(m), bucket_id(id) {}
+    name(n), data_pool(dp), obj_is_small_or_big(0), index_pool(ip), marker(m), bucket_id(id), compress(false) {}     //modify by hechuang
 
   void convert(cls_user_bucket *b) {
     b->name = name;
     b->data_pool = data_pool;
     b->data_extra_pool = data_extra_pool;
+    b->data_small_pool = data_small_pool;   //modify by hechuang
+    b->data_big_pool = data_big_pool;       //modify by hechuang
+    b->obj_is_small_or_big = obj_is_small_or_big;  //modify by hechuang
     b->index_pool = index_pool;
     b->marker = marker;
     b->bucket_id = bucket_id;
+    b->compress = compress;                     //modify by hechuang
   }
 
   void encode(bufferlist& bl) const {
-     ENCODE_START(7, 3, bl);
+     ENCODE_START(8, 3, bl);
     ::encode(name, bl);
     ::encode(data_pool, bl);
     ::encode(marker, bl);
     ::encode(bucket_id, bl);
     ::encode(index_pool, bl);
     ::encode(data_extra_pool, bl);
+    ::encode(data_small_pool, bl);             //modify by hechuang
+    ::encode(data_big_pool, bl);               //modify by hechuang
+    ::encode(obj_is_small_or_big, bl);         //modify by hechuang
+    ::encode(compress, bl);                  //modify by hechuang
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& bl) {
-    DECODE_START_LEGACY_COMPAT_LEN(7, 3, 3, bl);
+    DECODE_START_LEGACY_COMPAT_LEN(8, 3, 3, bl);
     ::decode(name, bl);
     ::decode(data_pool, bl);
     if (struct_v >= 2) {
@@ -652,6 +680,13 @@ struct rgw_bucket {
     if (struct_v >= 7) {
       ::decode(data_extra_pool, bl);
     }
+    if (struct_v >= 8) {                        //modify by hechuang
+      ::decode(data_small_pool, bl);
+      ::decode(data_big_pool, bl);
+      ::decode(obj_is_small_or_big, bl);
+	  ::decode(compress, bl);
+    }
+
     DECODE_FINISH(bl);
   }
 
@@ -991,6 +1026,22 @@ inline ostream& operator<<(ostream& out, const rgw_obj_key &o) {
   }
 }
 
+/*Begin added by lujiafu*/
+struct obj_merged_ref
+{
+	bool is_checked;
+	rgw_bucket_dir_entry bi_entry;
+#if 0	
+	librados::IoCtx io_ctx;
+	libradosstriper::RadosStriper striper_ctx;
+#endif
+	obj_merged_ref() : is_checked(false)
+	{
+	}
+	~obj_merged_ref(){}
+};
+/*End added*/
+
 /** Store all the state necessary to complete and respond to an HTTP request*/
 struct req_state {
    CephContext *cct;
@@ -1060,6 +1111,10 @@ struct req_state {
    string trans_id;
 
    req_info info;
+
+	 /*Begin added by lujiafu*/
+	 struct obj_merged_ref merge_ref;	
+	 /*End added*/
 
    req_state(CephContext *_cct, class RGWEnv *e);
    ~req_state();
@@ -1172,15 +1227,20 @@ public:
   std::string ns;
 
   bool in_extra_data; /* in-memory only member, does not serialize */
+  /* Begin added by hechuang */
+  bool in_small_data;
+  bool in_big_data;
+  std::string real_data_pool;
+  /* End added */
 
   // Represents the hash index source for this object once it is set (non-empty)
   std::string index_hash_source;
 
-  rgw_obj() : in_extra_data(false) {}
-  rgw_obj(rgw_bucket& b, const std::string& o) : in_extra_data(false) {
+  rgw_obj() : in_extra_data(false), in_small_data(false), in_big_data(false) {}     //modify by hechuang
+  rgw_obj(rgw_bucket& b, const std::string& o) : in_extra_data(false), in_small_data(false), in_big_data(false) {   //modify by hechuang
     init(b, o);
   }
-  rgw_obj(rgw_bucket& b, const rgw_obj_key& k) : in_extra_data(false) {
+  rgw_obj(rgw_bucket& b, const rgw_obj_key& k) : in_extra_data(false), in_small_data(false), in_big_data(false) {    //modify by hechuang
     init(b, k.name);
     set_instance(k.instance);
   }
@@ -1400,6 +1460,28 @@ public:
   bool is_in_extra_data() const {
     return in_extra_data;
   }
+  /* Begin added by hechuang */
+  void set_real_data_pool(string& s) {
+    real_data_pool = s;
+  }
+
+  void set_in_small_data(bool val) {
+    in_small_data = val;
+  }
+
+  bool is_in_small_data() const {
+    return in_small_data;
+  }
+
+  void set_in_big_data(bool val) {
+    in_big_data = val;
+  }
+
+  bool is_in_big_data() const {
+    return in_big_data;
+  }
+  /* End added */
+
 
   void encode(bufferlist& bl) const {
     ENCODE_START(5, 3, bl);

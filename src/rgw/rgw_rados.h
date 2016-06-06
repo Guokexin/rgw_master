@@ -16,6 +16,11 @@
 #include "rgw_log.h"
 #include "rgw_metadata.h"
 #include "rgw_rest_conn.h"
+/*Begin added by lujiafu*/
+#include "common/admin_socket.h"
+
+#include "rgw_bgt.h"
+/*End added*/
 
 class RGWWatcher;
 class SafeTimer;
@@ -122,8 +127,16 @@ struct RGWUsageIter {
 class RGWGetDataCB {
 protected:
   uint64_t extra_data_len;
+	/*Begin added by guokexin*/
+	int op_type;
+	/*End added*/
 public:
   virtual int handle_data(bufferlist& bl, off_t bl_ofs, off_t bl_len) = 0;
+	/*Begin added by guokexin*/
+	virtual int handle_complete_data(list<bufferlist>& lbl, uint64_t size){return 0;}
+  virtual void set_op_type( int _op_type ) { op_type = _op_type ; }
+  virtual int get_op_type () { return op_type ; }
+	/*End added*/	
   RGWGetDataCB() : extra_data_len(0) {}
   virtual ~RGWGetDataCB() {}
   virtual void set_extra_data_len(uint64_t len) {
@@ -171,6 +184,36 @@ struct RGWObjManifestPart {
   static void generate_test_instances(list<RGWObjManifestPart*>& o);
 };
 WRITE_CLASS_ENCODER(RGWObjManifestPart)
+
+/* Begin added by hechuang */
+struct compression_info {
+  off_t  ofs;
+  uint32_t size;
+  char mode;
+  uint32_t compressed_size;
+
+  compression_info() : ofs(0), size(0), compressed_size(0) {}
+
+  void encode(bufferlist& bl) const {
+    ENCODE_START(1, 1, bl);
+    ::encode(ofs, bl);
+    ::encode(size, bl);
+    ::encode(mode, bl);
+    ::encode(compressed_size, bl);
+    ENCODE_FINISH(bl);
+  }
+  void decode(bufferlist::iterator& bl) {
+    DECODE_START(1, bl) 
+    ::decode(ofs, bl);
+    ::decode(size, bl);
+    ::decode(mode, bl);
+    ::decode(compressed_size, bl);
+    DECODE_FINISH(bl);
+       
+  }
+ };
+WRITE_CLASS_ENCODER(compression_info)
+/* End added */
 
 /*
  The manifest defines a set of rules for structuring the object parts.
@@ -238,6 +281,9 @@ protected:
   rgw_bucket tail_bucket; /* might be different than the original bucket,
                              as object might have been copied across buckets */
   map<uint64_t, RGWObjManifestRule> rules;
+  /* Begin added by hechuang */
+  string real_data_pool;
+  /* End added */
 
   void convert_to_explicit();
   int append_explicit(RGWObjManifest& m);
@@ -248,6 +294,10 @@ protected:
     end_iter.seek(obj_size);
   }
 public:
+
+  /* Begin added by hechuang */
+  map<off_t , compression_info> compressed_info_map;
+  /* End added */
 
   RGWObjManifest() : explicit_objs(false), obj_size(0), head_size(0), max_head_size(0),
                      begin_iter(this), end_iter(this) {}
@@ -264,6 +314,8 @@ public:
     prefix = rhs.prefix;
     tail_bucket = rhs.tail_bucket;
     rules = rhs.rules;
+    real_data_pool = rhs.real_data_pool;     //added by hechuang
+    compressed_info_map = rhs.compressed_info_map;  //added by hechuang
 
     begin_iter.set_manifest(this);
     end_iter.set_manifest(this);
@@ -301,7 +353,7 @@ public:
   }
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(4, 3, bl);
+    ENCODE_START(5, 3, bl);
     ::encode(obj_size, bl);
     ::encode(objs, bl);
     ::encode(explicit_objs, bl);
@@ -310,12 +362,14 @@ public:
     ::encode(max_head_size, bl);
     ::encode(prefix, bl);
     ::encode(rules, bl);
-    ::encode(tail_bucket, bl);
-    ENCODE_FINISH(bl);
+    ::encode(tail_bucket, bl);  
+    ::encode(real_data_pool, bl);             //added by hechuang
+	::encode(compressed_info_map, bl);        //added by hechuang
+    ENCODE_FINISH(bl);          
   }
 
   void decode(bufferlist::iterator& bl) {
-    DECODE_START_LEGACY_COMPAT_LEN_32(4, 2, 2, bl);
+    DECODE_START_LEGACY_COMPAT_LEN_32(5, 2, 2, bl);
     ::decode(obj_size, bl);
     ::decode(objs, bl);
     if (struct_v >= 3) {
@@ -337,6 +391,10 @@ public:
 
     if (struct_v >= 4) {
       ::decode(tail_bucket, bl);
+    }  
+    if (struct_v >= 5) {                    //added by hechuang
+      ::decode(real_data_pool, bl);
+      ::decode(compressed_info_map, bl);  
     }
 
     update_iterators();
@@ -421,6 +479,18 @@ public:
   uint64_t get_max_head_size() {
     return max_head_size;
   }
+  /* Begin added by hechuang */
+  void set_real_data_pool(string& s) {
+    real_data_pool = s;
+      
+  }
+
+    string& get_real_data_pool() {
+          return real_data_pool;
+        
+  }
+  /* End added */
+
 
   class obj_iterator {
     RGWObjManifest *manifest;
@@ -697,22 +767,39 @@ struct RGWZonePlacementInfo {
   string index_pool;
   string data_pool;
   string data_extra_pool; /* if not set we should use data_pool */
+  /* Begin added by hechuang */
+  string data_small_pool; /* if not set we should use data_pool */
+  string data_big_pool; /* if not set we should use data_pool */
+  int64_t obj_is_small_or_big;
+  bool compress;          /* compress SW */
+  /* End added */
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(4, 1, bl);
+    ENCODE_START(5, 1, bl);
     ::encode(index_pool, bl);
     ::encode(data_pool, bl);
     ::encode(data_extra_pool, bl);
+    ::encode(data_small_pool, bl);       //Begin added by hechuang
+    ::encode(data_big_pool, bl);
+    ::encode(obj_is_small_or_big, bl);    
+	::encode(compress, bl);              //End added
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
-    DECODE_START(4, bl);
+    DECODE_START(5, bl);
     ::decode(index_pool, bl);
     ::decode(data_pool, bl);
     if (struct_v >= 4) {
       ::decode(data_extra_pool, bl);
     }
+    if (struct_v >= 5) {                  // added by hechuang
+      ::decode(data_small_pool, bl);
+      ::decode(data_big_pool, bl);
+      ::decode(obj_is_small_or_big, bl);
+	  ::decode(compress, bl);
+    }
+
     DECODE_FINISH(bl);
   }
   const string& get_data_extra_pool() {
@@ -1173,11 +1260,17 @@ class RGWRados
   /** Open the pool used as root for this gateway */
   int open_root_pool_ctx();
   int open_gc_pool_ctx();
-
-  int open_bucket_pool_ctx(const string& bucket_name, const string& pool, librados::IoCtx&  io_ctx);
+  //added by guokexin ,add para 4 , 20160505
+  int open_bucket_pool_ctx(const string& bucket_name, const string& pool, librados::IoCtx&  io_ctx , int op_type = 0);
   int open_bucket_index_ctx(rgw_bucket& bucket, librados::IoCtx&  index_ctx);
-  int open_bucket_data_ctx(rgw_bucket& bucket, librados::IoCtx&  io_ctx);
-  int open_bucket_data_extra_ctx(rgw_bucket& bucket, librados::IoCtx&  io_ctx);
+  //added by guokexin ,add para 3  20160505
+  int open_bucket_data_ctx(rgw_bucket& bucket, librados::IoCtx&  io_ctx, int op_type = 0);
+  //added by guokexin ,add para 3  20160505
+  int open_bucket_data_extra_ctx(rgw_bucket& bucket, librados::IoCtx&  io_ctx, int op_type = 0);
+  /* Begin added by hechuang */
+  int open_bucket_data_small_ctx(rgw_bucket& bucket, librados::IoCtx&  io_ctx);
+  int open_bucket_data_big_ctx(rgw_bucket& bucket, librados::IoCtx&  io_ctx);
+  /* End added */
   int open_bucket_index(rgw_bucket& bucket, librados::IoCtx&  index_ctx, string& bucket_oid);
   int open_bucket_index_base(rgw_bucket& bucket, librados::IoCtx&  index_ctx,
       string& bucket_oid_base);
@@ -1208,6 +1301,36 @@ class RGWRados
     }
   };
 
+	/*Begin added by lujiafu*/
+  class CommandHook : public AdminSocketHook {
+    RGWRados *m_rados;
+  public:
+    CommandHook(RGWRados *rados);
+    bool call(std::string command, cmdmap_t &cmdmap, std::string format,
+	      bufferlist& out);
+  };
+  CommandHook m_command_hook;
+
+	void* m_fes;
+
+	struct req_stat_civetweb
+	{
+	  atomic64_t g_concurrent_req_num;
+	  atomic64_t g_max_concurrent_req_num;
+		atomic64_t g_max_rsp_time;
+		atomic64_t g_total_req_num;
+		atomic64_t g_total_rsp_time;
+		atomic64_t g_total_failed_num;
+
+	  req_stat_civetweb() : g_concurrent_req_num(0), g_max_concurrent_req_num(0),
+															g_max_rsp_time(0), g_total_req_num(0),	
+															g_total_rsp_time(0), g_total_failed_num(0)
+		{
+	  }
+	};
+
+	/*End added*/
+	
   RGWGC *gc;
   bool use_gc_thread;
   bool quota_threads;
@@ -1225,8 +1348,8 @@ class RGWRados
 
   // This field represents the number of bucket index object shards
   uint32_t bucket_index_max_shards;
-
-  int get_obj_ioctx(const rgw_obj& obj, librados::IoCtx *ioctx);
+  //added by guokexin , add para 4,20160505
+  int get_obj_ioctx(const rgw_obj& obj, librados::IoCtx *ioctx, int op_type = 0);
   int get_obj_ref(const rgw_obj& obj, rgw_rados_ref *ref, rgw_bucket *bucket, bool ref_system_obj = false);
   uint64_t max_bucket_id;
 
@@ -1250,6 +1373,16 @@ protected:
   RWLock handle_lock;
   std::map<pthread_t, int> rados_map;
 
+  /*Begin added by guokexin*/
+  librados::Rados **rados_2;
+  atomic_t next_rados_handle_2;
+  uint32_t num_rados_handles_2;
+  RWLock handle_lock_2;
+  std::map<pthread_t, int> rados_map_2;
+  /*End added*/
+
+
+
   librados::IoCtx gc_pool_ctx;        // .rgw.gc
 
   bool pools_initialized;
@@ -1263,8 +1396,16 @@ protected:
   Finisher *finisher;
 
 public:
+	/*Begin added by lujiafu*/
+	void set_fe_list(void* fes){m_fes = fes;}
+	void* get_fe_list() {return m_fes;}
+	struct req_stat_civetweb g_req_stat_civetweb;
+	/*End added*/
   RGWRados() : max_req_id(0), lock("rados_timer_lock"), watchers_lock("watchers_lock"), timer(NULL),
-               gc(NULL), use_gc_thread(false), quota_threads(false),
+							 /*Begin added by lujiafu*/
+							 m_command_hook(this),
+							 /*End added*/
+							 gc(NULL), use_gc_thread(false), quota_threads(false),
                num_watchers(0), watchers(NULL),
                watch_initialized(false),
                bucket_id_lock("rados_bucket_id"),
@@ -1272,6 +1413,8 @@ public:
                max_bucket_id(0), cct(NULL),
                rados(NULL), next_rados_handle(0),
                num_rados_handles(0), handle_lock("rados_handle_lock"),
+               rados_2(NULL),next_rados_handle_2(0),
+               num_rados_handles_2(0),handle_lock_2("rados_handle_lock_2"),
                pools_initialized(false),
                quota_handler(NULL),
                finisher(NULL),
@@ -1293,6 +1436,11 @@ public:
   void set_zone(const string& name) {
     zone_name = name;
   }
+  /* Begin added by hechuang */
+  void set_bucket_shards(uint32_t num) {
+    bucket_index_max_shards = num;
+  }
+  /* End added */
 
   RGWRegion region;
   RGWZoneParams zone; /* internal zone params, e.g., rados pools */
@@ -1344,6 +1492,18 @@ public:
   /** Initialize the RADOS instance and prepare to do other ops */
   virtual int init_rados();
   int init_complete();
+  /* Begin adde by hechuang */
+  int reload_storage_policy();
+  virtual void invalidate_all() {};
+  /* End added */
+	/* Begin added by lujiafu */
+	int init_admin_socket();
+	void finalize_admin_socket();
+	int init_bgt_watcher();
+	int init_bgt_watcher(string& name, int role, RGWInstanceObjWatcher** watcher);
+	void finalize_bgt_watcher();
+	/* End added */
+	
   virtual int initialize();
   virtual void finalize();
 
@@ -1545,11 +1705,17 @@ public:
         Params() : lastmod(NULL), read_size(NULL), obj_size(NULL), attrs(NULL) {}
       } params;
 
-      Read(RGWRados::Object *_source) : source(_source) {}
+      //added by guokexin
+      int op_type; //default 0 , merge 1
+      Read(RGWRados::Object *_source , int _op_type = 0) : source(_source) , op_type(_op_type) {}
+      //end added
 
       int prepare(int64_t *pofs, int64_t *pend);
       int read(int64_t ofs, int64_t end, bufferlist& bl);
       int iterate(int64_t ofs, int64_t end, RGWGetDataCB *cb);
+			/*Begin added by guokexin*/
+			int iterate_archive(int64_t ofs, int64_t end, RGWGetDataCB *cb);
+			/*End added*/			
       int get_attr(const char *name, bufferlist& dest);
     };
 
@@ -1918,6 +2084,13 @@ public:
                   uint64_t max_chunk_size,
                   int (*iterate_obj_cb)(rgw_obj&, off_t, off_t, off_t, bool, RGWObjState *, void *),
                   void *arg);
+	/*Begin added by guokexin*/
+  int iterate_obj_archive(RGWObjectCtx& ctx, rgw_obj& obj, 
+  													 off_t ofs, off_t end, 
+  													 uint64_t max_chunk_size,
+  													 int (*iterate_obj_cb)(rgw_obj&, off_t, off_t, off_t, bool, RGWObjState *, void *),
+  													 void *arg);
+	/*End added*/
 
   int flush_read_list(struct get_obj_data *d);
 
@@ -1925,6 +2098,14 @@ public:
                          rgw_obj& obj,
                          off_t obj_ofs, off_t read_ofs, off_t len,
                          bool is_head_obj, void *arg);
+
+	/*Begin added by guokexin*/
+  int get_obj_iterate_cb_archive(RGWObjectCtx *ctx, RGWObjState *astate,
+                                      rgw_obj& obj,
+                                      off_t obj_ofs, off_t read_ofs, off_t len,
+                                      bool is_head_obj, void *arg);	
+	void get_obj_aio_completion_cb_archive(librados::completion_t cb, void *arg);
+	/*End added*/
 
   void get_obj_aio_completion_cb(librados::completion_t cb, void *arg);
 
@@ -2158,7 +2339,9 @@ public:
   }
 
   librados::Rados* get_rados_handle();
-
+  //added by guokexin
+  librados::Rados* get_rados_handle_2();
+  //end added
  private:
   /**
    * This is a helper method, it generates a list of bucket index objects with the given
@@ -2231,6 +2414,22 @@ public:
 
   uint64_t instance_id();
   uint64_t next_bucket_id();
+/* Begin added by lujiafu */
+public:
+  //comment by guokexin 20160505
+	//RGWBgtScheduler* m_bgt_scheduler;
+	//RGWBgtWorker* m_bgt_worker;
+
+	int write_bgt_change_log(rgw_bucket& bucket, rgw_obj& obj, uint64_t obj_len);
+	bool obj_is_merged(rgw_bucket& bucket, rgw_obj& obj, obj_merged_ref& merge_ref);
+	int read_obj_redirect(obj_merged_ref& merge_ref, 
+                           map<string, bufferlist> *attrs, time_t *last_mod,
+                           uint64_t *total_len, uint64_t *obj_size,
+                           off_t& ofs, off_t& end, bool get_data, bufferlist& bl_data);
+	int set_sfm_delete_flag(obj_merged_ref& merge_ref);
+	int delete_obj_redirect(rgw_bucket& bucket, rgw_obj& obj, obj_merged_ref& merge_ref);
+	void rgw_show_op_stat(Formatter * f);
+/* End added */		
 };
 
 class RGWStoreManager {
@@ -2355,7 +2554,9 @@ protected:
 
   int drain_pending();
   int handle_obj_data(rgw_obj& obj, bufferlist& bl, off_t ofs, off_t abs_ofs, void **phandle, bool exclusive);
-
+  /* Begin added by hechuang */
+  int handle_obj_data_for_compress(rgw_obj& obj, bufferlist& bl, off_t ofs, off_t abs_ofs, void **phandle, bool exclusive);
+  /* End added */
 public:
   int throttle_data(void *handle, bool need_to_wait);
 
@@ -2380,6 +2581,15 @@ class RGWPutObjProcessor_Atomic : public RGWPutObjProcessor_Aio
   bool versioned_object;
   uint64_t olh_epoch;
   string version_id;
+  /* Begin added by hechuang */
+  int64_t content_length;
+  bufferlist pending_data_merger_bl;                   //Begin for compress
+  struct compression_info extra_compression_info;
+  bool compress;
+  map <uint64_t, off_t> job_map;
+  map <off_t,rgw_obj> ofs2obj_map;
+  /* End added */
+
 
 protected:
   rgw_bucket bucket;
@@ -2393,6 +2603,10 @@ protected:
   RGWObjManifest::generator manifest_gen;
 
   int write_data(bufferlist& bl, off_t ofs, void **phandle, bool exclusive);
+  /* Begin added by hechuang */
+  int compress_data(bufferlist& bl);
+  int check_compress_and_blocking(bool blocking, bool exclusive);
+  /* End added */
   virtual int do_complete(string& etag, time_t *mtime, time_t set_mtime,
                           map<string, bufferlist>& attrs,
                           const char *if_match = NULL, const char *if_nomatch = NULL);
@@ -2425,6 +2639,7 @@ public:
   void set_extra_data_len(uint64_t len) {
     extra_data_len = len;
   }
+  virtual int data_merger(bufferlist& bl,off_t ofs, bool exclusive);     //added by hechuang
   virtual int handle_data(bufferlist& bl, off_t ofs, MD5 *hash, void **phandle, bool *again);
   virtual void complete_hash(MD5 *hash);
   bufferlist& get_extra_data() { return extra_data_bl; }
@@ -2436,6 +2651,24 @@ public:
   void set_version_id(const string& vid) {
     version_id = vid;
   }
+  /* Begin added by hechuang */
+  void set_obj_data_pool(rgw_obj& obj) {
+    if(content_length > bucket.obj_is_small_or_big) 
+    {
+      obj.set_in_big_data(true);
+      manifest.set_real_data_pool(bucket.data_big_pool);
+    }else {
+      obj.set_in_small_data(true);
+      manifest.set_real_data_pool(bucket.data_small_pool);
+    } 
+  }
+  void set_need_compress(bool c) {
+    compress = c;
+  }
+  void set_content_length(const int64_t len) {
+    content_length = len;
+  }
+  /* End added */
 };
 
 #endif

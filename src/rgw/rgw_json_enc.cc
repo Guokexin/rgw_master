@@ -496,6 +496,10 @@ void rgw_bucket::dump(Formatter *f) const
   encode_json("index_pool", index_pool, f);
   encode_json("marker", marker, f);
   encode_json("bucket_id", bucket_id, f);
+  encode_json("data_small_pool", data_small_pool, f);               /* Begin added by hechuang */
+  encode_json("data_big_pool", data_big_pool, f);
+  encode_json("obj_is_small_or_big", obj_is_small_or_big, f);
+  encode_json("compress", compress, f);                           /* End added */
 }
 
 void rgw_bucket::decode_json(JSONObj *obj) {
@@ -505,6 +509,10 @@ void rgw_bucket::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("index_pool", index_pool, obj);
   JSONDecoder::decode_json("marker", marker, obj);
   JSONDecoder::decode_json("bucket_id", bucket_id, obj);
+  JSONDecoder::decode_json("data_small_pool", data_small_pool, obj);           /* Begin added by hechuang */
+  JSONDecoder::decode_json("data_big_pool", data_big_pool, obj);
+  JSONDecoder::decode_json("obj_is_small_or_big", obj_is_small_or_big, obj);
+  JSONDecoder::decode_json("compress", compress, obj);                         /* Begin added by hechuang */
 }
 
 void RGWBucketEntryPoint::dump(Formatter *f) const
@@ -638,6 +646,13 @@ void RGWZonePlacementInfo::dump(Formatter *f) const
   encode_json("index_pool", index_pool, f);
   encode_json("data_pool", data_pool, f);
   encode_json("data_extra_pool", data_extra_pool, f);
+  /* Begin added by hechuang */
+  encode_json("data_small_pool", data_small_pool, f);
+  encode_json("data_big_pool", data_big_pool, f);
+  encode_json("obj_is_small_or_big", obj_is_small_or_big, f);
+  encode_json("compress", compress, f);
+  /* End added */
+
 }
 
 void RGWZonePlacementInfo::decode_json(JSONObj *obj)
@@ -645,6 +660,13 @@ void RGWZonePlacementInfo::decode_json(JSONObj *obj)
   JSONDecoder::decode_json("index_pool", index_pool, obj);
   JSONDecoder::decode_json("data_pool", data_pool, obj);
   JSONDecoder::decode_json("data_extra_pool", data_extra_pool, obj);
+  /* Begin added by hechuang */
+  JSONDecoder::decode_json("data_small_pool", data_small_pool, obj);
+  JSONDecoder::decode_json("data_big_pool", data_big_pool, obj);
+  JSONDecoder::decode_json("obj_is_small_or_big", obj_is_small_or_big, obj);
+  JSONDecoder::decode_json("compress", compress, obj);
+  /* End added */
+
 }
 
 void RGWZoneParams::decode_json(JSONObj *obj)

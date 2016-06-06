@@ -70,6 +70,7 @@ public:
     }
     out << "</AccessControlList>";
   }
+  int set_acl(ACLOwner& owner, string acl_str); //added by hechuang 
 
   int create_canned(ACLOwner& owner, ACLOwner& bucket_owner, const string& canned_acl);
   int create_from_grants(std::list<ACLGrant>& grants);
@@ -112,7 +113,14 @@ public:
   }
   int rebuild(RGWRados *store, ACLOwner *owner, RGWAccessControlPolicy& dest);
   bool compare_group_name(string& id, ACLGroupTypeEnum group);
-
+  /* Begin added by hechuang */
+  virtual int set_acl(ACLOwner& _owner,string acl_str) {
+    RGWAccessControlList_S3& _acl = static_cast<RGWAccessControlList_S3 &>(acl);
+    int ret = _acl.set_acl(owner,acl_str);
+    
+    return ret;
+  }
+  /* End added */
   virtual int create_canned(ACLOwner& _owner, ACLOwner& bucket_owner, string canned_acl) {
     RGWAccessControlList_S3& _acl = static_cast<RGWAccessControlList_S3 &>(acl);
     int ret = _acl.create_canned(_owner, bucket_owner, canned_acl);

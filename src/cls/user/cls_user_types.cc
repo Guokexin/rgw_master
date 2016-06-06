@@ -25,6 +25,10 @@ void cls_user_bucket::dump(Formatter *f) const
   encode_json("index_pool", index_pool,f);
   encode_json("marker", marker,f);
   encode_json("bucket_id", bucket_id,f);
+  encode_json("data_small_pool", data_small_pool,f);          /* Begin added by hechuang */
+  encode_json("data_big_pool", data_big_pool,f);
+  encode_json("obj_is_small_or_big", obj_is_small_or_big,f);
+  encode_json("compress", compress,f);                        /* End added */
 }
 
 void cls_user_bucket::generate_test_instances(list<cls_user_bucket*>& ls)

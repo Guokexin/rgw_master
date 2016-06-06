@@ -238,7 +238,7 @@ void RocksDBStore::RocksDBTransactionImpl::rmkey(const string &prefix,
 					         const string &k)
 {
   string key = combine_strings(prefix, k);
-  bat->Delete(rocksdb::Slice(k));
+  bat->Delete(rocksdb::Slice(key));
 }
 
 void RocksDBStore::RocksDBTransactionImpl::rmkeys_by_prefix(const string &prefix)

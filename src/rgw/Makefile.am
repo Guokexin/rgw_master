@@ -25,6 +25,10 @@ librgw_la_SOURCES =  \
 	rgw/rgw_bucket.cc\
 	rgw/rgw_tools.cc \
 	rgw/rgw_rados.cc \
+	rgw/rgw_bgt.cc \
+	rgw/rgw_archive_op.cc \
+	rgw/rgw_archive_task.cc \
+	rgw/rgw_archiveop_cb.cc \
 	rgw/rgw_http_client.cc \
 	rgw/rgw_rest_client.cc \
 	rgw/rgw_rest_conn.cc \
@@ -47,6 +51,7 @@ librgw_la_SOURCES =  \
 	rgw/rgw_quota.cc \
 	rgw/rgw_dencoder.cc
 librgw_la_CXXFLAGS = -Woverloaded-virtual ${AM_CXXFLAGS}
+librgw_la_LIBADD = $(LIBCOMPRESSOR)
 noinst_LTLIBRARIES += librgw.la
 
 LIBRGW_DEPS += \
@@ -147,6 +152,10 @@ noinst_HEADERS += \
 	rgw/rgw_swift_auth.h \
 	rgw/rgw_quota.h \
 	rgw/rgw_rados.h \
+	rgw/rgw_bgt.h \
+	rgw/rgw_archive_op.h \
+	rgw/rgw_archiveop_cb.h \
+	rgw/rgw_archive_task.h \
 	rgw/rgw_replica_log.h \
 	rgw/rgw_resolve.h \
 	rgw/rgw_rest.h \

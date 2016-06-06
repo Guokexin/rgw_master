@@ -57,6 +57,15 @@ void rgw_bucket_dir_entry_meta::dump(Formatter *f) const
   encode_json("owner_display_name", owner_display_name, f);
   encode_json("content_type", content_type, f);
   encode_json("accounted_size", accounted_size, f);
+
+  /*Begin added by lujiafu*/
+  encode_json("is_merged", is_merged, f);
+  encode_json("data_pool", data_pool, f);
+  encode_json("data_oid", data_oid, f);
+  encode_json("index", index, f);
+  encode_json("data_offset", data_offset, f);
+  encode_json("data_size", data_size, f);
+  /*End added*/  
 }
 
 void rgw_bucket_dir_entry_meta::decode_json(JSONObj *obj) {
@@ -70,6 +79,15 @@ void rgw_bucket_dir_entry_meta::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("owner_display_name", owner_display_name, obj);
   JSONDecoder::decode_json("content_type", content_type, obj);
   JSONDecoder::decode_json("accounted_size", accounted_size, obj);
+
+  /*Begin added by lujiafu*/
+  JSONDecoder::decode_json("is_merged", is_merged, obj);
+  JSONDecoder::decode_json("data_pool", data_pool, obj);
+  JSONDecoder::decode_json("data_oid", data_oid, obj);
+  JSONDecoder::decode_json("index", index, obj);
+  JSONDecoder::decode_json("data_offset", data_offset, obj);
+  JSONDecoder::decode_json("data_size", data_size, obj);  
+  /*End added*/  
 }
 
 void rgw_bucket_dir_entry::generate_test_instances(list<rgw_bucket_dir_entry*>& o)

@@ -25,6 +25,7 @@
 #define dout_subsys ceph_subsys_rgw
 
 PerfCounters *perfcounter = NULL;
+AsyncCompressor* ac = NULL;  //added by hechuang 
 
 const uint32_t RGWBucketInfo::NUM_SHARDS_BLIND_BUCKET(UINT32_MAX);
 
@@ -174,7 +175,9 @@ req_state::req_state(CephContext *_cct, class RGWEnv *e) : cct(_cct), cio(NULL),
   copy_source = NULL;
   http_auth = NULL;
   local_source = false;
-
+  /*Begin added by lujiafu*/
+  merge_ref.is_checked = false;
+  /*End added*/
   obj_ctx = NULL;
 }
 

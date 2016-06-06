@@ -719,12 +719,28 @@ static int civetweb_callback(struct mg_connection *conn) {
 
   client_io.init(g_ceph_context);
 
-
+  store->g_req_stat_civetweb.g_concurrent_req_num.inc();
+  store->g_req_stat_civetweb.g_total_req_num.inc();
+  uint64_t cur_num = store->g_req_stat_civetweb.g_concurrent_req_num.read();
+  if (cur_num > store->g_req_stat_civetweb.g_max_concurrent_req_num.read())
+  {
+    store->g_req_stat_civetweb.g_max_concurrent_req_num.set(cur_num);
+  }
+  utime_t t1 = ceph_clock_now(0);
   int ret = process_request(store, rest, req, &client_io, olog);
   if (ret < 0) {
     /* we don't really care about return code */
     dout(20) << "process_request() returned " << ret << dendl;
+    store->g_req_stat_civetweb.g_total_failed_num.inc();
   }
+  utime_t t2 = ceph_clock_now(0);
+  uint64_t cost = t2.to_msec()-t1.to_msec();
+  store->g_req_stat_civetweb.g_total_rsp_time.add(cost);
+  if (cost > store->g_req_stat_civetweb.g_max_rsp_time.read())
+  {
+    store->g_req_stat_civetweb.g_max_rsp_time.set(cost);
+  }
+  store->g_req_stat_civetweb.g_concurrent_req_num.dec();
 
   delete req;
 
@@ -1066,7 +1082,10 @@ int main(int argc, const char **argv)
   curl_global_init(CURL_GLOBAL_ALL);
   
   FCGX_Init();
-
+  /* Begin added by hechuang */
+  //ac = new AsyncCompressor(g_ceph_context);
+  //ac->init();
+  /* End added */
   int r = 0;
   RGWRados *store = RGWStoreManager::get_storage(g_ceph_context,
       g_conf->rgw_enable_gc_threads, g_conf->rgw_enable_quota_threads);
@@ -1179,7 +1198,10 @@ int main(int argc, const char **argv)
   }
 
   list<RGWFrontend *> fes;
-
+  /*Begin added by lujiafu*/
+  store->set_fe_list((void*)&fes);
+  /*End added*/
+  
   for (multimap<string, RGWFrontendConfig *>::iterator fiter = fe_map.begin(); fiter != fe_map.end(); ++fiter) {
     RGWFrontendConfig *config = fiter->second;
     string framework = config->get_framework();
@@ -1237,6 +1259,9 @@ int main(int argc, const char **argv)
     delete fec;
   }
 
+ /* Begin added by hechuang */
+ // ac->terminate();
+ /* End added */
   unregister_async_signal_handler(SIGHUP, sighup_handler);
   unregister_async_signal_handler(SIGTERM, handle_sigterm);
   unregister_async_signal_handler(SIGINT, handle_sigterm);

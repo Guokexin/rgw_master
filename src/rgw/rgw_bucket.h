@@ -127,6 +127,11 @@ struct RGWBucketAdminOpState {
   std::string bucket_id;
   std::string object_name;
 
+  /* Begin added by hechuang */
+  std::string bucket_location;  // bucket_location
+  std::string bucket_acl;              // bucket_acl
+  int bucket_shards;              // bucket_shards
+  /* End added */
   bool list_buckets;
   bool stat_buckets;
   bool check_objects;
@@ -148,6 +153,17 @@ struct RGWBucketAdminOpState {
   void set_bucket_name(std::string& bucket_str) {
     bucket_name = bucket_str; 
   }
+  /* Begin added by hechuang */
+  void set_bucket_location(std::string& bucket_location_str) {   // set bucket_location
+    bucket_location = bucket_location_str; 
+  }
+  void set_bucket_acl(std::string& bucket_acl_str) {   // set bucket_acl
+    bucket_acl = bucket_acl_str;
+  }
+  void set_bucket_shards(int num) {   // set bucket_shards
+    bucket_shards = num;
+  }
+  /* End added */
   void set_object(std::string& object_str) {
     object_name = object_str;
   }
@@ -155,6 +171,11 @@ struct RGWBucketAdminOpState {
   std::string& get_user_id() { return uid; }
   std::string& get_user_display_name() { return display_name; }
   std::string& get_bucket_name() { return bucket_name; }
+  /* Begin added by hechuang */
+  std::string& get_bucket_location() { return bucket_location; } //get bucket_location
+  std::string& get_bucket_acl() { return bucket_acl; }           //get bucket_acl
+  int get_bucket_shards() { return bucket_shards; }           //get bucket_shards
+  /* End added by hechuang */
   std::string& get_object_name() { return object_name; }
 
   rgw_bucket& get_bucket() { return bucket; }
@@ -176,7 +197,7 @@ struct RGWBucketAdminOpState {
   bool is_system_op() { return uid.empty(); }
   bool has_bucket_stored() { return bucket_stored; }
 
-  RGWBucketAdminOpState() : list_buckets(false), stat_buckets(false), check_objects(false), 
+  RGWBucketAdminOpState() : bucket_shards(0), list_buckets(false), stat_buckets(false), check_objects(false),
                             fix_index(false), delete_child_objects(false),
                             bucket_stored(false)  {}
 };
@@ -216,6 +237,13 @@ public:
           std::string *err_msg = NULL);
 
   int remove(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
+  /* Begin added by hechuang */
+  int create(RGWRados *store, RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
+  int acl(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
+  int storage_policy(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
+  int compress(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
+  int nocompress(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
+  /* End added */
   int link(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
   int unlink(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
 
@@ -237,7 +265,13 @@ public:
 
   static int unlink(RGWRados *store, RGWBucketAdminOpState& op_state);
   static int link(RGWRados *store, RGWBucketAdminOpState& op_state, string *err_msg = NULL);
-
+  /* Begin added by hechuang */
+  static int create(RGWRados *store, RGWBucketAdminOpState& op_state, string *err_msg = NULL);
+  static int acl(RGWRados *store, RGWBucketAdminOpState& op_state, string *err_msg = NULL);
+  static int storage_policy(RGWRados *store, RGWBucketAdminOpState& op_state, string *err_msg = NULL);
+  static int compress(RGWRados *store, RGWBucketAdminOpState& op_state, string *err_msg = NULL);
+  static int nocompress(RGWRados *store, RGWBucketAdminOpState& op_state, string *err_msg = NULL);
+  /* End added */
   static int check_index(RGWRados *store, RGWBucketAdminOpState& op_state,
                   RGWFormatterFlusher& flusher);
 
