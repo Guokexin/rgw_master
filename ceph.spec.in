@@ -622,6 +622,7 @@ fi
 %{_libdir}/rados-classes/libcls_rbd.so*
 %{_libdir}/rados-classes/libcls_hello.so*
 %{_libdir}/rados-classes/libcls_rgw.so*
+%{_libdir}/rados-classes/libcls_timeindex.so*
 %{_libdir}/rados-classes/libcls_lock.so*
 %{_libdir}/rados-classes/libcls_kvs.so*
 %{_libdir}/rados-classes/libcls_refcount.so*
@@ -747,6 +748,7 @@ fi
 %{_initrddir}/ceph-radosgw
 %{_bindir}/radosgw
 %{_bindir}/radosgw-admin
+%{_bindir}/radosgw-object-expirer
 %{_mandir}/man8/radosgw.8*
 %{_mandir}/man8/radosgw-admin.8*
 %{_sbindir}/rcceph-radosgw
