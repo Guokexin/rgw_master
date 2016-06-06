@@ -149,6 +149,7 @@ noinst_HEADERS += \
 	rgw/rgw_multi.h \
 	rgw/rgw_policy_s3.h \
 	rgw/rgw_gc.h \
+	rgw/rgw_object_expirer_core.h \
 	rgw/rgw_metadata.h \
 	rgw/rgw_multi_del.h \
 	rgw/rgw_op.h \
