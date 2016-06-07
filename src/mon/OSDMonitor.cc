@@ -62,6 +62,8 @@
 #include "include/str_list.h"
 #include "include/str_map.h"
 
+#include <regex.h>
+
 #define dout_subsys ceph_subsys_mon
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, mon, osdmap)
@@ -143,10 +145,46 @@ string OSDMonitor::AESCrypt::encrypt(string plain)
   return encoded;
 }
 
+bool valid_hex_string(string str)
+{
+  regex_t reg;
+  regmatch_t pmatch[4];
+  size_t nmatch = 4;
+  int cflags = REG_EXTENDED|REG_NEWLINE;
+  int eflags = 0;
+  const char *buf = str.c_str();
+  char ebuf[128];
+  int ret;
+
+  // invalid char
+  char pattern[] = "[^0-9A-F]";
+
+  // generate regex by pattern
+  ret = regcomp(&reg, pattern, cflags);
+  if (ret < 0) {
+    regerror(ret, &reg, ebuf, sizeof(ebuf));
+    return false;
+  }
+
+  // only math the first pattern
+  ret = regexec(&reg, buf, nmatch, pmatch, eflags);
+  // there is no invalid char
+  if (ret == REG_NOMATCH) {
+    regfree(&reg);
+    return true;
+  }
+  regfree(&reg);
+  return false;
+}
+
 string OSDMonitor::AESCrypt::decrypt(string cipher_hex)
 {
   string decoded;
   string recovered;
+
+  // check if string is valid
+  if (!valid_hex_string(cipher_hex))
+    return recovered;
   //generic_dout(0) << "AESCrypt::decrypt: cipher_hex = " << cipher_hex << dendl;
 
   decoded.clear();
@@ -156,7 +194,8 @@ string OSDMonitor::AESCrypt::decrypt(string cipher_hex)
     CBC_Mode< AES >::Decryption d;
     d.SetKeyWithIV(key, CryptoPP::AES::DEFAULT_KEYLENGTH*sizeof(key[0]), iv);
 
-    StringSource s(decoded, true, new StreamTransformationFilter(d,new StringSink(recovered)));
+    StringSource s(decoded, true, new StreamTransformationFilter(
+	d, new StringSink(recovered), StreamTransformationFilter::NO_PADDING));
   } catch(const CryptoPP::Exception& e) {
     generic_dout(0) << "OSDMonitor::AESCrypt::" <<__func__ << ": " << e.what() << dendl;
     generic_dout(0) << "OSDMonitor::AESCrypt::" <<__func__ << ": got an invalid SN" << dendl;
@@ -187,8 +226,11 @@ void OSDMonitor::parse_ceph_sn(string &sn, time_t &time, unsigned &osds) {
     cipher += sn.substr(pos, lens[i+1]);
   }
   plain = aes_crypt.decrypt(cipher);
-  time = strtoul(plain.substr(0, 10).c_str(), NULL, 10);
-  osds = atoi(plain.substr(10,5).c_str());
+  if (plain != "") {
+    time = strtoul(plain.substr(0, 10).c_str(), NULL, 10);
+    osds = atoi(plain.substr(10,5).c_str());
+  }
+  dout(10) << __func__ << ": time: " << time << ", osds: " << osds << dendl;
 }
 
 int OSDMonitor::get_ceph_serial_number(bufferlist &bl) {
@@ -221,6 +263,7 @@ bool OSDMonitor::check_ceph_serial_number() {
   } else {
     bl.copy(0, bl.length(), cipher_hex);
     if (bl.length() == 0 || bl.length() % SN_SIZE != 0) {
+      dout(0) << __func__ << ": sn length is not valid, using default" << dendl;  
       expire_time = now_time + DEFAULT_EXPIRE_INTERVAL;
       osds = default_osds;
     } else {
