@@ -141,6 +141,9 @@ bool LeakyBucketThrottle::config(BucketType type, double avg, double max)
     return false;
   Mutex::Locker l(lock);
   map<BucketType, LeakyBucket> local(buckets);
+  // both avg and max are 0 means to disable this bucket
+  if (avg == 0 && max == 0)
+    local[type].avg = local[type].min = local[type].max = 0;
   if (avg)
     local[type].avg = local[type].min = avg;
   if (max)
