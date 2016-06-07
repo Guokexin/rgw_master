@@ -2434,6 +2434,19 @@ void AsyncConnection::handle_write()
       keepalive = false;
     }
 
+    uint64_t left = ack_left.read();
+    if (left) {
+      ceph_le64 s;
+      s = in_seq.read();
+      bl.append(CEPH_MSGR_TAG_ACK);
+      bl.append((char*)&s, sizeof(s));
+      ldout(async_msgr->cct, 10) << __func__ << " try send msg ack, acked " << left << " messages" << dendl;
+      ack_left.sub(left);
+      r = _try_send(bl, true, is_queued());
+    } else if (is_queued()) {
+      r = _try_send(bl);
+    }
+
     while (1) {
       bufferlist data;
       Message *m = _get_next_outgoing(&data);
@@ -2452,19 +2465,6 @@ void AsyncConnection::handle_write()
       } else if (r > 0) {
         break;
       }
-    }
-
-    uint64_t left = ack_left.read();
-    if (left) {
-      ceph_le64 s;
-      s = in_seq.read();
-      bl.append(CEPH_MSGR_TAG_ACK);
-      bl.append((char*)&s, sizeof(s));
-      ldout(async_msgr->cct, 10) << __func__ << " try send msg ack, acked " << left << " messages" << dendl;
-      ack_left.sub(left);
-      r = _try_send(bl, true, true);
-    } else if (is_queued()) {
-      r = _try_send(bl);
     }
 
     write_lock.Unlock();
