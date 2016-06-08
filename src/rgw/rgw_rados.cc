@@ -4638,6 +4638,8 @@ int RGWRados::Object::Write::write_meta(uint64_t size,
   RGWRados::Bucket bop(store, bucket);
   RGWRados::Bucket::UpdateIndex index_op(&bop, obj, state);
 
+/*Begin deleted by lujiafu*/
+#if 0
   if (versioned_op) {
     index_op.set_bilog_flags(RGW_BILOG_FLAG_VERSIONED_OP);
   }
@@ -4645,6 +4647,8 @@ int RGWRados::Object::Write::write_meta(uint64_t size,
   r = index_op.prepare(CLS_RGW_OP_ADD);
   if (r < 0)
     return r;
+#endif
+/*End delete*/
 
   r = ref.ioctx.operate(ref.oid, &op);
   if (r < 0) { /* we can expect to get -ECANCELED if object was replaced under,
