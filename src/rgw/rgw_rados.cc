@@ -2680,10 +2680,13 @@ int RGWRados::init_complete()
   /* Begin added by lujiafu */
   //init_bgt_watcher();
   //Begin added by guokexin
-  RGWBgtManager* manager = RGWBgtManager::instance();
-  if(manager) {
-    ldout(cct, 0) << "init RGWBgtManager " << dendl;
-    manager->init(this, cct );
+  if (NULL != m_fes)
+  {
+    RGWBgtManager* manager = RGWBgtManager::instance();
+    if(manager) {
+      ldout(cct, 0) << "init RGWBgtManager " << dendl;
+      manager->init(this, cct );
+    }
   }
   //End added
   init_admin_socket();

@@ -1439,6 +1439,7 @@ public:
 
 							 /*Begin added by lujiafu*/
 							 m_command_hook(this),
+							 m_fes(NULL);
 							 /*End added*/
 
 
