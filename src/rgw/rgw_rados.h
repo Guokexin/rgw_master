@@ -1439,12 +1439,9 @@ public:
 
 							 /*Begin added by lujiafu*/
 							 m_command_hook(this),
-							 m_fes(NULL);
+							 m_fes(NULL),
 							 /*End added*/
-
-
                gc(NULL), obj_expirer(NULL), use_gc_thread(false), quota_threads(false),
-
                num_watchers(0), watchers(NULL),
                watch_initialized(false),
                bucket_id_lock("rados_bucket_id"),
