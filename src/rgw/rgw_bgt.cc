@@ -3821,13 +3821,13 @@ int RGWBgtManager::reload_scheduler( ) {
   int ret = 0;
   std::set<string> out_keys;
   ret = m_manager_inst_obj->m_io_ctx.omap_get_keys(m_manager_inst_name,"",LONG_MAX, &out_keys);
-  ldout(m_cct , 0 ) << out_keys.size() << dendl;  
+  ldout(m_cct , 5) << out_keys.size() << dendl;  
 
   std::set<std::string>::iterator it ;
   for(it = out_keys.begin() ; it != out_keys.end(); it++) {
 
     std::string key = *it;
-    ldout(m_cct , 0 ) << *it << dendl;
+    ldout(m_cct , 5) << *it << dendl;
     std::string scheduler_prefix = RGW_BGT_SCHEDULER_INST_PREFIX ;
     size_t pos = key.find(scheduler_prefix);
     if( pos != string::npos ) {
@@ -3845,7 +3845,7 @@ int RGWBgtManager::reload_scheduler( ) {
         ret = m_manager_inst_obj->m_io_ctx.omap_get_vals_by_keys(m_manager_inst_name, keys, &vals);
         if( 0 == ret ) { 
             
-          ldout(m_cct, 0) << "vals size " << vals.size() << " key " << *it << dendl;
+          ldout(m_cct , 5) << "vals size " << vals.size() << " key " << *it << dendl;
           bufferlist::iterator iter = vals[*it].begin();
           RGWSchedulerInfo info;
           ::decode(info,iter);
@@ -3871,7 +3871,7 @@ int RGWBgtManager::reload_scheduler( ) {
 
         ret = m_manager_inst_obj->m_io_ctx.omap_get_vals_by_keys(m_manager_inst_name, keys, &vals);
         if( 0 == ret ) {
-          ldout(m_cct, 0) << "vals size " << vals.size() << " key " << *it << dendl;
+          ldout(m_cct , 5) << "vals size " << vals.size() << " key " << *it << dendl;
           bufferlist::iterator iter = vals[*it].begin();
           RGWSchedulerInfo info;
           ::decode(info,iter);
@@ -3916,7 +3916,7 @@ int RGWBgtManager::reload_workers( ) {
   for(it = out_keys.begin() ; it != out_keys.end(); it++) {
 
     std::string key = *it;
-    ldout(m_cct , 0 ) << *it << dendl;
+    ldout(m_cct , 5) << *it << dendl;
     //size_t pos = key.find(RGW_BGT_SCHEDULER_INST_PREFIX);
     std::string scheduler_prefix = RGW_BGT_WORKER_INST_PREFIX ;
     size_t pos = key.find(scheduler_prefix);
@@ -4133,7 +4133,6 @@ RGWBgtWorker*  RGWBgtManager::get_idle_merger_instance( ) {
     m_workers.insert(std::pair<std::string, RGWBgtWorker*>(tworker->m_name, tworker));
   }
 
-  ldout(m_cct , 5) << "333333333333333333333333333333" << dendl;
   if( NULL != worker ) {
     worker->set_state(0);
   }
@@ -4236,7 +4235,7 @@ void RGWBgtManager::snap_archive_v( ) {
   std::list<uint64_t>::iterator it ;
   
   for(it = archive_v_queue.begin(); it != archive_v_queue.end(); it++ ) {
-    ldout(m_cct , 0) << "merger v === " << (*it) << dendl;
+    ldout(m_cct , 5) << "merger v === " << (*it) << dendl;
   }
 }
 

@@ -577,6 +577,10 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
     abort_early(s, NULL, -ERR_METHOD_NOT_ALLOWED);
     goto done;
   }
+
+
+  dout(10) << "op = " << typeid(*op).name() << dendl;
+
   req->op = op;
 
   req->log(s, "authorizing");

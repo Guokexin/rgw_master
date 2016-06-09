@@ -502,6 +502,175 @@ void RGWSetBucketVersioning_ObjStore_S3::send_response()
 }
 
 
+//begin added by guokexin 20160606
+class RGWSetBucketLifeCycleParser : public RGWXMLParser
+{
+  XMLObj *alloc_obj(const char *el) {
+    return new XMLObj;
+  }
+
+  public:
+  RGWSetBucketLifeCycleParser() {}
+  ~RGWSetBucketLifeCycleParser() {}
+
+  int get_days(bool *status,std::string& days) {
+    XMLObj *config = find_first("LifecycleConfiguration");
+    if (!config)
+      return -EINVAL;
+
+    config = config->find_first("Rule");
+    if (!config)
+      return -EINVAL;
+
+
+
+    *status = false;
+
+    XMLObj *field = config->find_first("Status");
+    if (!field)
+      return 0;
+
+    string& s = field->get_data();
+
+    if (stringcasecmp(s, "Enabled") == 0) {
+      *status = true;
+    } 
+    else if (stringcasecmp(s, "Suspended") != 0) {
+      return -EINVAL;
+    }
+
+    config = config->find_first("Expiration");
+
+
+    field = config->find_first("Days");
+    if (!field)
+      return 0;
+
+    s = field->get_data();
+
+    days = s;
+    std::cout << "Expires Days : "<< s << std::endl;
+   
+
+    return 0;
+  }
+};
+//end added
+
+
+//begin added by guokexin 20160606
+int RGWSetBucketLifeCycle_ObjStore_S3::get_params()
+{
+#define GET_BUCKET_VERSIONING_BUF_MAX (128 * 1024)
+
+  ldout(s->cct , 0) << "RGWGetBucketLifeCycle_ObjStore_S3::get_params" << dendl;
+  char *data;
+  int len = 0;
+  int r = rgw_rest_read_all_input(s, &data, &len, GET_BUCKET_VERSIONING_BUF_MAX);
+  if (r < 0) {
+    return r;
+  }
+
+  ldout(s->cct , 0) << "RGWSetBucketLifeCycle_ObjStore " << data << dendl;
+  RGWSetBucketLifeCycleParser parser;
+
+  if (!parser.init()) {
+    ldout(s->cct, 0) << "ERROR: failed to initialize parser" << dendl;
+    r = -EIO;
+    goto done;
+  }
+
+  if (!parser.parse(data, len, 1)) {
+    ldout(s->cct, 0) << "failed to parse data: " << data << dendl;
+    r = -EINVAL;
+    goto done;
+  }
+
+  r = parser.get_days(&enable_lifecycle, days);
+
+  ldout(s->cct , 0) << "get_lifecycle_status " << enable_lifecycle << dendl;
+  ldout(s->cct , 0) << "get_lifeycle_days " << days << dendl;
+done:
+  free(data);
+
+  return r;
+}
+
+void RGWSetBucketLifeCycle_ObjStore_S3::send_response()
+{
+  if (ret)
+    set_req_state_err(s, ret);
+  dump_errno(s);
+  end_header(s);
+}
+
+//end added
+
+//begin added by guokexin 20160606
+int RGWDelBucketLifeCycle_ObjStore_S3::get_params()
+{
+  return ret = 0;
+}
+
+void RGWDelBucketLifeCycle_ObjStore_S3::send_response()
+{
+  if (ret)
+    set_req_state_err(s, ret);
+  dump_errno(s);
+  end_header(s);
+}
+
+//end added
+
+//begin added by guokexin 20160607
+void RGWGetBucketLifeCycle_ObjStore_S3::send_response()
+{
+  if(days == "-1") {
+    dump_errno(s);
+    end_header(s, this, "application/xml");
+    dump_start(s);
+
+    s->formatter->open_object_section_in_ns("LifeCycleConfiguration",
+        "http://doc.s3.amazonaws.com/doc/2006-03-01/");
+    s->formatter->close_section();
+    rgw_flush_formatter_and_reset(s, s->formatter);
+ 
+
+
+  }
+  else {
+
+
+    dump_errno(s);
+    end_header(s, this, "application/xml");
+    dump_start(s);
+
+    s->formatter->open_object_section_in_ns("LifeCycleConfiguration",
+        "http://doc.s3.amazonaws.com/doc/2006-03-01/");
+
+    s->formatter->open_array_section("Rule");
+    s->formatter->dump_string("Prefix","");
+    s->formatter->dump_string("Status","Enabled");
+    //s->formatter->dump_string("Expiration","");
+    s->formatter->open_array_section("Expiration");
+    s->formatter->dump_string("Days",days);
+    s->formatter->close_section();
+    s->formatter->close_section();
+    //if (versioned) {
+    //  const char *status = (versioning_enabled ? "Enabled" : "Suspended");
+    //  s->formatter->dump_string("Status", status);
+    //}
+
+    s->formatter->close_section();
+    rgw_flush_formatter_and_reset(s, s->formatter);
+  }
+}
+//end added
+
+
+
+
+
 static void dump_bucket_metadata(struct req_state *s, RGWBucketEnt& bucket)
 {
   char buf[32];
@@ -1967,6 +2136,11 @@ RGWOp *RGWHandler_ObjStore_Bucket_S3::op_get()
 
   if (s->info.args.sub_resource_exists("versioning"))
     return new RGWGetBucketVersioning_ObjStore_S3;
+  //begin added by guokexin  20160607
+  if (s->info.args.sub_resource_exists("lifecycle"))
+    return new RGWGetBucketLifeCycle_ObjStore_S3;
+  //end added
+ 
 
   if (is_acl_op()) {
     return new RGWGetACLs_ObjStore_S3;
@@ -1994,6 +2168,12 @@ RGWOp *RGWHandler_ObjStore_Bucket_S3::op_put()
     return NULL;
   if (s->info.args.sub_resource_exists("versioning"))
     return new RGWSetBucketVersioning_ObjStore_S3;
+   //begin add by guokexin 20160606
+  if(s->info.args.sub_resource_exists("lifecycle"))  {
+    dout(10) << "RGWSetBucketLifeCycle_ObjStore_S3" << dendl;
+    return new RGWSetBucketLifeCycle_ObjStore_S3;
+  }
+  //end added
   if (is_acl_op()) {
     return new RGWPutACLs_ObjStore_S3;
   } else if (is_cors_op()) {
@@ -2004,6 +2184,13 @@ RGWOp *RGWHandler_ObjStore_Bucket_S3::op_put()
 
 RGWOp *RGWHandler_ObjStore_Bucket_S3::op_delete()
 {
+  //begin add by guokexin 20160606
+  if(s->info.args.sub_resource_exists("lifecycle"))  {
+    dout(10) << "RGWDelBucketLifeCycle_ObjStore_S3" << dendl;
+    return new RGWDelBucketLifeCycle_ObjStore_S3;
+  }
+  //end added
+
   if (is_cors_op()) {
     return new RGWDeleteCORS_ObjStore_S3;
   }

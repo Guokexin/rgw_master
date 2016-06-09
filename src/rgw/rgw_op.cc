@@ -39,6 +39,9 @@ static string shadow_ns = RGW_OBJ_NS_SHADOW;
 #define MULTIPART_UPLOAD_ID_PREFIX_LEGACY "2/"
 #define MULTIPART_UPLOAD_ID_PREFIX "2~" // must contain a unique char that may not come up in gen_rand_alpha()
 
+/*Begin added by guokexin*/
+static void encode_delete_at_attr(time_t delete_at, map<string, bufferlist>& attrs);
+/*End added*/
 class MultipartMetaFilter : public RGWAccessListFilter {
 public:
   MultipartMetaFilter() {}
@@ -914,9 +917,16 @@ static bool object_is_expired(map<string, bufferlist>& attrs) {
       return false;
     }
 
+    
+    dout(10) << "delete_at  : "<< delete_at <<dendl;
+    
     if (delete_at <= ceph_clock_now(g_ceph_context)) {
       return true;
     }
+  }
+  else {
+
+    dout(10) << "no exist " << dendl;
   }
 
   return false;
@@ -1019,6 +1029,7 @@ void RGWGetObj::execute()
   new_ofs = ofs;
   new_end = end;
 
+  ldout(s->cct , 10) << "last_mod " << lastmod << dendl;
   read_op.conds.mod_ptr = mod_ptr;
   read_op.conds.unmod_ptr = unmod_ptr;
   read_op.conds.if_match = if_match;
@@ -1032,6 +1043,41 @@ void RGWGetObj::execute()
   ret = read_op.prepare(&new_ofs, &new_end);
   if (ret < 0)
     goto done_err;
+
+
+  //begin added by guokexin 20160609
+  if(s->bucket_info.days != "-1") {
+    map<string, bufferlist>::iterator iter = attrs.find(RGW_ATTR_DELETE_AT);
+    if (iter == attrs.end()) {
+      ldout(s->cct , 0) << "NO RGW_ATTR_DELETE_AT" << dendl;
+      //rgw_bucket bucket;
+      rgw_rados_ref ref;
+      librados::ObjectWriteOperation op;
+
+      delete_at = ceph_clock_now(0).sec() + atoi(s->bucket_info.days.c_str());
+      bufferlist delatbl;
+      ::encode(utime_t(delete_at, 0), delatbl);
+      op.setxattr(RGW_ATTR_DELETE_AT, delatbl);
+
+      int r = store->get_obj_ref(obj, &ref, &s->bucket);
+      r = ref.ioctx.operate(ref.oid, &op);
+      encode_delete_at_attr(delete_at,attrs);
+
+      //
+      if (delete_at > 0) {
+
+        rgw_obj_key obj_key;
+        obj.get_index_key(&obj_key);
+        ldout(s->cct , 0) << "objexp_hint_add" << dendl;
+        r = store->objexp_hint_add(utime_t(delete_at, 0), s->bucket.name, s->bucket.bucket_id, obj_key);
+        if (r < 0) {
+          ldout(s->cct, 0) << "ERROR: objexp_hint_add() returned r=" << r << ", object will not get removed" << dendl;
+        }
+      }
+    }
+  }
+  //end added
+
 
   attr_iter = attrs.find(RGW_ATTR_USER_MANIFEST);
   if (attr_iter != attrs.end()) {
@@ -1243,6 +1289,107 @@ void RGWSetBucketVersioning::execute()
     return;
   }
 }
+
+
+
+//begin added by guokexin
+int RGWSetBucketLifeCycle::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWSetBucketLifeCycle::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWSetBucketLifeCycle::execute()
+{
+
+  ldout(s->cct , 0) << "RGWSetBucketLifeCycle::execute" << dendl;
+  ret = get_params();
+  ldout(s->cct , 0) << "RGWSetBucketLifeCycle::execute" << dendl;
+
+  if (ret < 0)
+    return;
+
+
+  if (enable_lifecycle) {
+    s->bucket_info.days = days;
+  }
+
+
+  ret = store->put_bucket_instance_info(s->bucket_info, false, 0, &s->bucket_attrs);
+  if (ret < 0) {
+    ldout(s->cct, 0) << "NOTICE: put_bucket_info on bucket=" << s->bucket.name << " returned err=" << ret << dendl;
+    return;
+  }
+}
+//end added
+//begin added by guokexin
+
+int RGWGetBucketLifeCycle::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWGetBucketLifeCycle::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWGetBucketLifeCycle::execute()
+{
+  days = s->bucket_info.days;
+  //versioned = s->bucket_info.versioned();
+  //versioning_enabled = s->bucket_info.versioning_enabled();
+}
+//end added
+
+
+
+
+
+//begin added by guokexin
+int RGWDelBucketLifeCycle::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWDelBucketLifeCycle::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWDelBucketLifeCycle::execute()
+{
+  if (ret < 0)
+    return;
+
+ 
+  s->bucket_info.days = "";
+  s->bucket_info.days = "-1"; 
+
+
+  ret = store->put_bucket_instance_info(s->bucket_info, false, 0, &s->bucket_attrs);
+  if (ret < 0) {
+    ldout(s->cct, 0) << "NOTICE: put_bucket_info on bucket=" << s->bucket.name << " returned err=" << ret << dendl;
+    return;
+  }
+}
+//end added
+
+
+
 
 int RGWStatBucket::verify_permission()
 {
@@ -1910,6 +2057,16 @@ void RGWPutObj::execute()
   ret = get_params();
   if (ret < 0)
     goto done;
+
+  //added by guokexin 20160609
+  ldout(s->cct , 10) << "Bucket_Info " << s->bucket_info.days << dendl;
+  if(s->bucket_info.days != "-1") {
+    time_t cur_time = ceph_clock_now(0).sec();
+    delete_at = cur_time + atoi(s->bucket_info.days.c_str());
+    ldout(s->cct , 10) << "cur_time "<< cur_time << dendl;
+    ldout(s->cct , 10) << "delete_at "<< delete_at << dendl;
+  }
+  //end added
 
   ret = get_system_versioning_params(s, &olh_epoch, &version_id);
   if (ret < 0) {
