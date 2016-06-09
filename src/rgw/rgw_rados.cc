@@ -3691,6 +3691,8 @@ int RGWRados::Bucket::List::list_objects(int max, vector<RGWObjEnt> *result,
       rgw_obj_key key = obj;
       string instance;
       string ns;
+      //guokexin list obj
+      ldout(cct , 20) << key.name << dendl;
 
       bool valid = rgw_obj::parse_raw_oid(obj.name, &obj.name, &instance, &ns);
       if (!valid) {
@@ -4690,6 +4692,7 @@ int RGWRados::Object::Write::write_meta(uint64_t size,
     rgw_obj_key obj_key;
     obj.get_index_key(&obj_key);
 
+    ldout(store->ctx() , 0) << "objexp_hint_add" << dendl;
     r = store->objexp_hint_add(utime_t(meta.delete_at, 0), bucket.name, bucket.bucket_id, obj_key);
     if (r < 0) {
       ldout(store->ctx(), 0) << "ERROR: objexp_hint_add() returned r=" << r << ", object will not get removed" << dendl;
