@@ -2509,26 +2509,6 @@ void RGWSetTempUrl::execute()
     ldout(store->ctx(), 10) << "user.modify() returned " << ret << ": " << err_msg << dendl;
     return;
   }
-#if 0
-<<<<<<< HEAD
-
-=======
-  /* Check whether the object has expired. Swift API documentation
-   * stands that we should return 404 Not Found in such case. */
-  if (need_object_expiration() && object_is_expired(orig_attrs)) {
-    ret = -ENOENT;
-    return;
-  }
->>>>>>> 478b14e... rgw: verify Swift object lifetime at POST.
-
-  /* Filter currently existing attributes. */
-  prepare_add_del_attrs(orig_attrs, attrs, rmattrs);
-  populate_with_generic_attrs(s, attrs);
-  encode_delete_at_attr(delete_at, attrs);
-
-  ret = store->set_attrs(s->obj_ctx, obj, attrs, &rmattrs, NULL);
->>>>>>> 4f9a843... rgw: add basic support for X-Delete-At header of Swift API.
-#endif
 }
 
 

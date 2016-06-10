@@ -581,19 +581,6 @@ int RGWSetTempUrl_ObjStore_SWIFT::get_params()
 
   if (temp_url_keys.empty())
     return -EINVAL;
-#if 0
-<<<<<<< HEAD
-=======
-  /* Handle Swift object expiration. */
-  int r = get_delete_at_param(s, &delete_at);
-  if (r < 0) {
-    ldout(s->cct, 5) << "ERROR: failed to get Delete-At param" << dendl;
-    return r;
-  }
-
-  placement_rule = s->info.env->get("HTTP_X_STORAGE_POLICY", "");
->>>>>>> 4f9a843... rgw: add basic support for X-Delete-At header of Swift API.
-#endif
   return 0;
 }
 
