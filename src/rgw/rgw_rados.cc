@@ -6977,13 +6977,7 @@ int RGWRados::Bucket::UpdateIndex::complete(int64_t poolid, uint64_t epoch, uint
   ent.content_type = content_type;
 
   /*Begin added by lujiafu*/
-  if (obj_state && obj_state->write_tag.length()) {
-    optag = string(obj_state->write_tag.c_str(), obj_state->write_tag.length());
-  } else {
-    if (optag.empty()) {
-      append_rand_alpha(store->ctx(), optag, optag, 32);
-    }
-  }
+  optag = "";
   /*End added*/
 
   ret = store->cls_obj_complete_add(*bs, optag, poolid, epoch, ent, category, remove_objs, bilog_flags);
