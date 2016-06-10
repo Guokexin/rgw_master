@@ -70,6 +70,7 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_CONTENT_ENC	RGW_ATTR_PREFIX "content_encoding"
 #define RGW_ATTR_CONTENT_LANG	RGW_ATTR_PREFIX "content_language"
 #define RGW_ATTR_EXPIRES	RGW_ATTR_PREFIX "expires"
+#define RGW_ATTR_DELETE_AT 	RGW_ATTR_PREFIX "delete_at"
 #define RGW_ATTR_ID_TAG    	RGW_ATTR_PREFIX "idtag"
 #define RGW_ATTR_SHADOW_OBJ    	RGW_ATTR_PREFIX "shadow_name"
 #define RGW_ATTR_MANIFEST    	RGW_ATTR_PREFIX "manifest"
@@ -821,8 +822,10 @@ struct RGWBucketInfo
   // Represents the shard number for blind bucket.
   const static uint32_t NUM_SHARDS_BLIND_BUCKET;
 
+  /*Begin added by guokexin*/
+  std::string days;
   void encode(bufferlist& bl) const {
-     ENCODE_START(11, 4, bl);
+     ENCODE_START(12, 4, bl);
      ::encode(bucket, bl);
      ::encode(owner, bl);
      ::encode(flags, bl);
@@ -834,6 +837,7 @@ struct RGWBucketInfo
      ::encode(quota, bl);
      ::encode(num_shards, bl);
      ::encode(bucket_index_shard_hash_type, bl);
+     ::encode(days,bl);
      ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& bl) {
@@ -860,8 +864,11 @@ struct RGWBucketInfo
        ::decode(num_shards, bl);
      if (struct_v >= 11)
        ::decode(bucket_index_shard_hash_type, bl);
+     if (struct_v >= 12)
+       ::decode(days,bl);
      DECODE_FINISH(bl);
   }
+  /*End added*/
   void dump(Formatter *f) const;
   static void generate_test_instances(list<RGWBucketInfo*>& o);
 
@@ -870,8 +877,8 @@ struct RGWBucketInfo
   bool versioned() { return (flags & BUCKET_VERSIONED) != 0; }
   int versioning_status() { return flags & (BUCKET_VERSIONED | BUCKET_VERSIONS_SUSPENDED); }
   bool versioning_enabled() { return versioning_status() == BUCKET_VERSIONED; }
-
-  RGWBucketInfo() : flags(0), creation_time(0), has_instance_obj(false), num_shards(0), bucket_index_shard_hash_type(MOD) {}
+  //modified by guokexin 20160609
+  RGWBucketInfo() : flags(0), creation_time(0), has_instance_obj(false), num_shards(0), bucket_index_shard_hash_type(MOD) , days("-1") {}
 };
 WRITE_CLASS_ENCODER(RGWBucketInfo)
 

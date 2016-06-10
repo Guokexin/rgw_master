@@ -60,6 +60,11 @@ enum RGWOpType {
   RGW_OP_LIST_MULTIPART,
   RGW_OP_LIST_BUCKET_MULTIPARTS,
   RGW_OP_DELETE_MULTI_OBJ,
+  //added by guokexin 20160609 
+  RGW_OP_SET_BUCKET_LIFECYCLE,
+  RGW_OP_GET_BUCKET_LIFECYCLE,
+  RGW_OP_DEL_BUCKET_LIFECYCLE,
+  //end added
 };
 
 /**
@@ -135,6 +140,9 @@ protected:
   rgw_obj obj;
   utime_t gc_invalidate_time;
 
+  //begin added by guokexin  20160609
+  time_t delete_at;
+  //end added
   int init_common();
 public:
   RGWGetObj() {
@@ -155,6 +163,9 @@ public:
     get_data = false;
     partial_content = false;
     ret = 0;
+    //added by guokexin 20160609
+    delete_at = 0;
+    //end added
  }
 
   virtual bool prefetch_data() { return get_data; }
@@ -176,6 +187,7 @@ public:
   virtual const string name() { return "get_obj"; }
   virtual RGWOpType get_type() { return RGW_OP_GET_OBJ; }
   virtual uint32_t op_mask() { return RGW_OP_TYPE_READ; }
+  virtual bool need_object_expiration() { return false; }
 };
 
 #define RGW_LIST_BUCKETS_LIMIT_MAX 10000
@@ -330,6 +342,75 @@ public:
   virtual uint32_t op_mask() { return RGW_OP_TYPE_WRITE; }
 };
 
+//begin added by guokexin 20160606
+class RGWSetBucketLifeCycle : public RGWOp {
+protected:
+  bool enable_lifecycle;
+  int ret;
+  std::string days;
+public:
+  RGWSetBucketLifeCycle() : enable_lifecycle(false), ret(0) {}
+
+  int verify_permission();
+  void pre_exec();
+  void execute();
+
+  virtual int get_params() { return 0; }
+
+  virtual void send_response() = 0;
+  virtual const string name() { return "set_bucket_lifecycle"; }
+  virtual RGWOpType get_type() { return RGW_OP_SET_BUCKET_LIFECYCLE; }
+  virtual uint32_t op_mask() { return RGW_OP_TYPE_WRITE; }
+};
+//end added
+
+//begin added by guokexin 20160607
+class RGWGetBucketLifeCycle : public RGWOp {
+protected:
+  bool versioned;
+  bool versioning_enabled;
+public:
+  std::string days;
+public:
+  RGWGetBucketLifeCycle() : versioned(false), versioning_enabled(false) , days("") {}
+
+  int verify_permission();
+  void pre_exec();
+  void execute();
+
+  virtual void send_response() = 0;
+  virtual const string name() { return "get_bucket_lifecycle"; }
+  virtual RGWOpType get_type() { return RGW_OP_GET_BUCKET_LIFECYCLE; }
+  virtual uint32_t op_mask() { return RGW_OP_TYPE_READ; }
+};
+//end added
+
+
+
+
+//begin added by guokexin 20160606
+class RGWDelBucketLifeCycle : public RGWOp {
+protected:
+  bool enable_lifecycle;
+  int ret;
+  std::string days;
+public:
+  RGWDelBucketLifeCycle() : enable_lifecycle(false), ret(0) {}
+
+  int verify_permission();
+  void pre_exec();
+  void execute();
+
+  virtual int get_params() { return 0; }
+
+  virtual void send_response() = 0;
+  virtual const string name() { return "del_bucket_lifecycle"; }
+  virtual RGWOpType get_type() { return RGW_OP_DEL_BUCKET_LIFECYCLE; }
+  virtual uint32_t op_mask() { return RGW_OP_TYPE_WRITE; }
+};
+//end added
+
+
 class RGWStatBucket : public RGWOp {
 protected:
   int ret;
@@ -420,6 +501,8 @@ protected:
   uint64_t olh_epoch;
   string version_id;
 
+  time_t delete_at;
+
 public:
   RGWPutObj() {
     ret = 0;
@@ -433,6 +516,7 @@ public:
     mtime = 0;
     user_manifest_parts_hash = NULL;
     olh_epoch = 0;
+    delete_at = 0;
   }
 
   virtual void init(RGWRados *store, struct req_state *s, RGWHandler *h) {
@@ -473,11 +557,12 @@ protected:
   string content_type;
   RGWAccessControlPolicy policy;
   map<string, bufferlist> attrs;
+  time_t delete_at;
 
 public:
   RGWPostObj() : min_len(0), max_len(LLONG_MAX), ret(0), len(0), ofs(0),
 		 supplied_md5_b64(NULL), supplied_etag(NULL),
-		 data_pending(false) {}
+		 data_pending(false), delete_at(0) {}
 
   virtual void init(RGWRados *store, struct req_state *s, RGWHandler *h) {
     RGWOp::init(store, s, h);
@@ -533,9 +618,13 @@ public:
 class RGWSetTempUrl : public RGWOp {
 protected:
   int ret;
+
   map<int, string> temp_url_keys;
+
+  time_t delete_at;
+
 public:
-  RGWSetTempUrl() : ret(0) {}
+  RGWSetTempUrl() : ret(0), delete_at(0) {}
 
   int verify_permission();
   void execute();
@@ -544,6 +633,7 @@ public:
   virtual void send_response() = 0;
   virtual const string name() { return "set_temp_url"; }
   virtual RGWOpType get_type() { return RGW_OP_SET_TEMPURL; }
+  virtual bool need_object_expiration() { return false; }
 };
 
 class RGWDeleteObj : public RGWOp {
@@ -602,6 +692,7 @@ protected:
   string version_id;
   uint64_t olh_epoch;
 
+  time_t delete_at;
 
   int init_common();
 
@@ -624,6 +715,7 @@ public:
     attrs_mod = RGWRados::ATTRSMOD_NONE;
     last_ofs = 0;
     olh_epoch = 0;
+    delete_at = 0;
   }
 
   static bool parse_copy_location(const string& src, string& bucket_name, rgw_obj_key& object);

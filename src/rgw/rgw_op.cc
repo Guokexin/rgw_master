@@ -39,6 +39,9 @@ static string shadow_ns = RGW_OBJ_NS_SHADOW;
 #define MULTIPART_UPLOAD_ID_PREFIX_LEGACY "2/"
 #define MULTIPART_UPLOAD_ID_PREFIX "2~" // must contain a unique char that may not come up in gen_rand_alpha()
 
+/*Begin added by guokexin*/
+static void encode_delete_at_attr(time_t delete_at, map<string, bufferlist>& attrs);
+/*End added*/
 class MultipartMetaFilter : public RGWAccessListFilter {
 public:
   MultipartMetaFilter() {}
@@ -903,6 +906,32 @@ void RGWGetObj::pre_exec()
   rgw_bucket_object_pre_exec(s);
 }
 
+static bool object_is_expired(map<string, bufferlist>& attrs) {
+  map<string, bufferlist>::iterator iter = attrs.find(RGW_ATTR_DELETE_AT);
+  if (iter != attrs.end()) {
+    utime_t delete_at;
+    try {
+      ::decode(delete_at, iter->second);
+    } catch (buffer::error& err) {
+      dout(0) << "ERROR: " << __func__ << ": failed to decode " RGW_ATTR_DELETE_AT " attr" << dendl;
+      return false;
+    }
+
+    
+    dout(10) << "delete_at  : "<< delete_at <<dendl;
+    
+    if (delete_at <= ceph_clock_now(g_ceph_context)) {
+      return true;
+    }
+  }
+  else {
+
+    dout(10) << "no exist " << dendl;
+  }
+
+  return false;
+}
+
 void RGWGetObj::execute()
 {
   utime_t start_time = s->time;
@@ -1000,6 +1029,7 @@ void RGWGetObj::execute()
   new_ofs = ofs;
   new_end = end;
 
+  ldout(s->cct , 10) << "last_mod " << lastmod << dendl;
   read_op.conds.mod_ptr = mod_ptr;
   read_op.conds.unmod_ptr = unmod_ptr;
   read_op.conds.if_match = if_match;
@@ -1014,6 +1044,41 @@ void RGWGetObj::execute()
   if (ret < 0)
     goto done_err;
 
+
+  //begin added by guokexin 20160609
+  if(s->bucket_info.days != "-1") {
+    map<string, bufferlist>::iterator iter = attrs.find(RGW_ATTR_DELETE_AT);
+    if (iter == attrs.end()) {
+      ldout(s->cct , 0) << "NO RGW_ATTR_DELETE_AT" << dendl;
+      //rgw_bucket bucket;
+      rgw_rados_ref ref;
+      librados::ObjectWriteOperation op;
+
+      delete_at = ceph_clock_now(0).sec() + atoi(s->bucket_info.days.c_str());
+      bufferlist delatbl;
+      ::encode(utime_t(delete_at, 0), delatbl);
+      op.setxattr(RGW_ATTR_DELETE_AT, delatbl);
+
+      int r = store->get_obj_ref(obj, &ref, &s->bucket);
+      r = ref.ioctx.operate(ref.oid, &op);
+      encode_delete_at_attr(delete_at,attrs);
+
+      //
+      if (delete_at > 0) {
+
+        rgw_obj_key obj_key;
+        obj.get_index_key(&obj_key);
+        ldout(s->cct , 0) << "objexp_hint_add" << dendl;
+        r = store->objexp_hint_add(utime_t(delete_at, 0), s->bucket.name, s->bucket.bucket_id, obj_key);
+        if (r < 0) {
+          ldout(s->cct, 0) << "ERROR: objexp_hint_add() returned r=" << r << ", object will not get removed" << dendl;
+        }
+      }
+    }
+  }
+  //end added
+
+
   attr_iter = attrs.find(RGW_ATTR_USER_MANIFEST);
   if (attr_iter != attrs.end()) {
     ret = handle_user_manifest(attr_iter->second.c_str());
@@ -1021,6 +1086,13 @@ void RGWGetObj::execute()
       ldout(s->cct, 0) << "ERROR: failed to handle user manifest ret=" << ret << dendl;
     }
     return;
+  }
+
+  /* Check whether the object has expired. Swift API documentation
+   * stands that we should return 404 Not Found in such case. */
+  if (need_object_expiration() && object_is_expired(attrs)) {
+    ret = -ENOENT;
+    goto done_err;
   }
 
   ofs = new_ofs;
@@ -1217,6 +1289,107 @@ void RGWSetBucketVersioning::execute()
     return;
   }
 }
+
+
+
+//begin added by guokexin
+int RGWSetBucketLifeCycle::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWSetBucketLifeCycle::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWSetBucketLifeCycle::execute()
+{
+
+  ldout(s->cct , 0) << "RGWSetBucketLifeCycle::execute" << dendl;
+  ret = get_params();
+  ldout(s->cct , 0) << "RGWSetBucketLifeCycle::execute" << dendl;
+
+  if (ret < 0)
+    return;
+
+
+  if (enable_lifecycle) {
+    s->bucket_info.days = days;
+  }
+
+
+  ret = store->put_bucket_instance_info(s->bucket_info, false, 0, &s->bucket_attrs);
+  if (ret < 0) {
+    ldout(s->cct, 0) << "NOTICE: put_bucket_info on bucket=" << s->bucket.name << " returned err=" << ret << dendl;
+    return;
+  }
+}
+//end added
+//begin added by guokexin
+
+int RGWGetBucketLifeCycle::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWGetBucketLifeCycle::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWGetBucketLifeCycle::execute()
+{
+  days = s->bucket_info.days;
+  //versioned = s->bucket_info.versioned();
+  //versioning_enabled = s->bucket_info.versioning_enabled();
+}
+//end added
+
+
+
+
+
+//begin added by guokexin
+int RGWDelBucketLifeCycle::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWDelBucketLifeCycle::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWDelBucketLifeCycle::execute()
+{
+  if (ret < 0)
+    return;
+
+ 
+  s->bucket_info.days = "";
+  s->bucket_info.days = "-1"; 
+
+
+  ret = store->put_bucket_instance_info(s->bucket_info, false, 0, &s->bucket_attrs);
+  if (ret < 0) {
+    ldout(s->cct, 0) << "NOTICE: put_bucket_info on bucket=" << s->bucket.name << " returned err=" << ret << dendl;
+    return;
+  }
+}
+//end added
+
+
+
 
 int RGWStatBucket::verify_permission()
 {
@@ -1594,7 +1767,7 @@ class RGWPutObjProcessor_Multipart : public RGWPutObjProcessor_Atomic
 protected:
   int prepare(RGWRados *store, string *oid_rand);
   int do_complete(string& etag, time_t *mtime, time_t set_mtime,
-                  map<string, bufferlist>& attrs,
+                  map<string, bufferlist>& attrs, time_t delete_at,
                   const char *if_match = NULL, const char *if_nomatch = NULL);
 
 public:
@@ -1672,7 +1845,7 @@ static bool is_v2_upload_id(const string& upload_id)
 }
 
 int RGWPutObjProcessor_Multipart::do_complete(string& etag, time_t *mtime, time_t set_mtime,
-                                              map<string, bufferlist>& attrs,
+                                              map<string, bufferlist>& attrs, time_t delete_at,
                                               const char *if_match, const char *if_nomatch)
 {
   complete_writing_data();
@@ -1684,6 +1857,7 @@ int RGWPutObjProcessor_Multipart::do_complete(string& etag, time_t *mtime, time_
   head_obj_op.meta.set_mtime = set_mtime;
   head_obj_op.meta.mtime = mtime;
   head_obj_op.meta.owner = s->owner.get_id();
+  head_obj_op.meta.delete_at = delete_at;
 
   int r = head_obj_op.write_meta(s->obj_size, attrs);
   if (r < 0)
@@ -1846,6 +2020,17 @@ static int get_system_versioning_params(req_state *s, uint64_t *olh_epoch, strin
   return 0;
 }
 
+static void encode_delete_at_attr(time_t delete_at, map<string, bufferlist>& attrs)
+{
+  if (delete_at == 0) {
+    return;
+  }
+
+  bufferlist delatbl;
+  ::encode(utime_t(delete_at, 0), delatbl);
+  attrs[RGW_ATTR_DELETE_AT] = delatbl;
+}
+
 void RGWPutObj::execute()
 {
   RGWPutObjProcessor *processor = NULL;
@@ -1872,6 +2057,16 @@ void RGWPutObj::execute()
   ret = get_params();
   if (ret < 0)
     goto done;
+
+  //added by guokexin 20160609
+  ldout(s->cct , 10) << "Bucket_Info " << s->bucket_info.days << dendl;
+  if(s->bucket_info.days != "-1") {
+    time_t cur_time = ceph_clock_now(0).sec();
+    delete_at = cur_time + atoi(s->bucket_info.days.c_str());
+    ldout(s->cct , 10) << "cur_time "<< cur_time << dendl;
+    ldout(s->cct , 10) << "delete_at "<< delete_at << dendl;
+  }
+  //end added
 
   ret = get_system_versioning_params(s, &olh_epoch, &version_id);
   if (ret < 0) {
@@ -2048,8 +2243,10 @@ void RGWPutObj::execute()
   }
 
   rgw_get_request_metadata(s->cct, s->info, attrs);
+  encode_delete_at_attr(delete_at, attrs);
 
-  ret = processor->complete(etag, &mtime, 0, attrs, if_match, if_nomatch);
+  ret = processor->complete(etag, &mtime, 0, attrs, delete_at, if_match, if_nomatch);
+
 done:
   dispose_processor(processor);
   perfcounter->tinc(l_rgw_put_lat,
@@ -2171,7 +2368,7 @@ void RGWPostObj::execute()
     attrs[RGW_ATTR_CONTENT_TYPE] = ct_bl;
   }
 
-  ret = processor->complete(etag, NULL, 0, attrs);
+  ret = processor->complete(etag, NULL, 0, attrs, delete_at);
 
 done:
   dispose_processor(processor);
@@ -2563,6 +2760,8 @@ void RGWCopyObj::execute()
   obj_ctx.set_atomic(src_obj);
   obj_ctx.set_atomic(dst_obj);
 
+  encode_delete_at_attr(delete_at, attrs);
+
   ret = store->copy_obj(obj_ctx,
                         s->user.user_id,
                         client_id,
@@ -2582,6 +2781,7 @@ void RGWCopyObj::execute()
                         attrs_mod,
                         attrs, RGW_OBJ_CATEGORY_MAIN,
                         olh_epoch,
+			delete_at,
                         (version_id.empty() ? NULL : &version_id),
                         &s->req_id, /* use req_id as tag */
                         &etag,

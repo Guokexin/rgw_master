@@ -577,6 +577,10 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
     abort_early(s, NULL, -ERR_METHOD_NOT_ALLOWED);
     goto done;
   }
+
+
+  dout(10) << "op = " << typeid(*op).name() << dendl;
+
   req->op = op;
 
   req->log(s, "authorizing");
@@ -1234,7 +1238,12 @@ int main(int argc, const char **argv)
       derr << "ERROR: failed initializing frontend" << dendl;
       return -r;
     }
-    fe->run();
+    r = fe->run();
+    if (r < 0)
+    {
+      derr << "ERROR: failed initializing frontend" << dendl;
+      return -r;
+    }
 
     fes.push_back(fe);
   }

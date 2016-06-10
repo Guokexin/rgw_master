@@ -27,6 +27,7 @@
 #include "cls/version/cls_version_client.h"
 #include "cls/log/cls_log_client.h"
 #include "cls/statelog/cls_statelog_client.h"
+#include "cls/timeindex/cls_timeindex_client.h"
 #include "cls/lock/cls_lock_client.h"
 #include "cls/user/cls_user_client.h"
 
@@ -48,6 +49,7 @@ using namespace librados;
 #include "rgw_log.h"
 
 #include "rgw_gc.h"
+#include "rgw_object_expirer_core.h"
 
 /*Begin added by guokexin*/
 #include "rgw_archive_op.h"
@@ -909,10 +911,10 @@ void RGWObjVersionTracker::generate_new_write_ver(CephContext *cct)
 }
 
 int RGWPutObjProcessor::complete(string& etag, time_t *mtime, time_t set_mtime,
-                                 map<string, bufferlist>& attrs,
+                                 map<string, bufferlist>& attrs, time_t delete_at,
                                  const char *if_match, const char * if_nomatch)
 {
-  int r = do_complete(etag, mtime, set_mtime, attrs, if_match, if_nomatch);
+  int r = do_complete(etag, mtime, set_mtime, attrs, delete_at, if_match, if_nomatch);
   if (r < 0)
     return r;
 
@@ -1405,7 +1407,7 @@ int RGWPutObjProcessor_Atomic::complete_writing_data()
 }
 
 int RGWPutObjProcessor_Atomic::do_complete(string& etag, time_t *mtime, time_t set_mtime,
-                                           map<string, bufferlist>& attrs,
+                                           map<string, bufferlist>& attrs, time_t delete_at,
                                            const char *if_match,
                                            const char *if_nomatch) {
   int r = complete_writing_data();
@@ -1437,6 +1439,7 @@ int RGWPutObjProcessor_Atomic::do_complete(string& etag, time_t *mtime, time_t s
   obj_op.meta.owner = bucket_info.owner;
   obj_op.meta.flags = PUT_OBJ_CREATE;
   obj_op.meta.olh_epoch = olh_epoch;
+  obj_op.meta.delete_at = delete_at;
 
   r = obj_op.write_meta(obj_len, attrs);
   if (r < 0) {
@@ -1579,6 +1582,10 @@ void RGWRados::rgw_show_op_stat(Formatter * f)
 
 int RGWRados::write_bgt_change_log(rgw_bucket& bucket, rgw_obj& obj, uint64_t obj_len)
 {
+  /*Begin added by Lujiafu for suyanyuan test*/
+  return 0;
+  /*End add*/
+  
   if (obj_len >= cct->_conf->rgw_bgt_merged_src_obj_max_size)
   {
     ldout(cct, 0) << "obj size " << obj_len << ", is bigger than " << cct->_conf->rgw_bgt_merged_src_obj_max_size << dendl; 
@@ -1626,7 +1633,7 @@ int RGWRados::write_bgt_change_log(rgw_bucket& bucket, rgw_obj& obj, uint64_t ob
     r = scheduler->write_change_log(log_entry);    
   }
   else {
-    ldout(cct , 0) << "scheduler == null" << dendl;
+    ldout(cct , 20) << "scheduler == null" << dendl;
   }
   if (r < 0)
   {
@@ -2126,9 +2133,14 @@ void RGWRados::finalize()
   delete data_log;
   if (use_gc_thread) {
     gc->stop_processor();
-    delete gc;
-    gc = NULL;
+    obj_expirer->stop_processor();
   }
+  delete gc;
+  gc = NULL;
+
+  delete obj_expirer;
+  obj_expirer = NULL;
+
   delete rest_master_conn;
 
   /*Begin added by lujiafu*/
@@ -2636,13 +2648,21 @@ int RGWRados::init_complete()
   if (ret < 0)
     return ret;
 
+  ret = open_objexp_pool_ctx();
+  if (ret < 0)
+    return ret;
+
   pools_initialized = true;
 
   gc = new RGWGC();
   gc->initialize(cct, this);
 
-  if (use_gc_thread)
+  obj_expirer = new RGWObjectExpirer(this);
+
+  if (use_gc_thread) {
     gc->start_processor();
+    obj_expirer->start_processor();
+  }
 
   quota_handler = RGWQuotaHandler::generate_handler(this, quota_threads);
 
@@ -2660,10 +2680,13 @@ int RGWRados::init_complete()
   /* Begin added by lujiafu */
   //init_bgt_watcher();
   //Begin added by guokexin
-  RGWBgtManager* manager = RGWBgtManager::instance();
-  if(manager) {
-    ldout(cct, 0) << "init RGWBgtManager " << dendl;
-    manager->init(this, cct );
+  if (NULL != m_fes)
+  {
+    RGWBgtManager* manager = RGWBgtManager::instance();
+    if(manager) {
+      ldout(cct, 0) << "init RGWBgtManager " << dendl;
+      manager->init(this, cct );
+    }
   }
   //End added
   init_admin_socket();
@@ -2784,6 +2807,25 @@ int RGWRados::open_gc_pool_ctx()
       return r;
 
     r = rad->ioctx_create(gc_pool, gc_pool_ctx);
+  }
+
+  return r;
+}
+
+int RGWRados::open_objexp_pool_ctx()
+{
+  const char * const pool_name = zone.log_pool.name.c_str();
+  librados::Rados * const rad = get_rados_handle();
+  int r = rad->ioctx_create(pool_name, objexp_pool_ctx);
+  if (r == -ENOENT) {
+    r = rad->pool_create(pool_name);
+    if (r == -EEXIST) {
+      r = 0;
+    } else if (r < 0) {
+      return r;
+    }
+
+    r = rad->ioctx_create(pool_name, objexp_pool_ctx);
   }
 
   return r;
@@ -3380,6 +3422,115 @@ int RGWRados::time_log_trim(const string& oid, const utime_t& start_time, const 
   return cls_log_trim(io_ctx, oid, start_time, end_time, from_marker, to_marker);
 }
 
+string RGWRados::objexp_hint_get_shardname(int shard_num)
+{
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%010u", shard_num);
+
+  string objname("obj_delete_at_hint.");
+  return objname + buf;
+}
+
+#define MAX_PBJEXP_SHARDS_PRIME 7877
+
+int RGWRados::objexp_key_shard(const rgw_obj_key& key)
+{
+  string obj_key = key.name + key.instance;
+  int num_shards = cct->_conf->rgw_objexp_hints_num_shards;
+  uint32_t sid = ceph_str_hash_linux(obj_key.c_str(), obj_key.size());
+  uint32_t sid2 = sid ^ ((sid & 0xFF) << 24);
+  sid = sid2 % MAX_BUCKET_INDEX_SHARDS_PRIME % num_shards;
+  return sid % num_shards;
+}
+
+static string objexp_hint_get_keyext(const string& bucket_name,
+                                     const string& bucket_id,
+                                     const rgw_obj_key& obj_key)
+{
+  return bucket_name + ":" + bucket_id + ":" + obj_key.name + ":" + obj_key.instance;
+}
+
+int RGWRados::objexp_hint_add(const utime_t& delete_at,
+                              const string& bucket_name,
+                              const string& bucket_id,
+                              const rgw_obj_key& obj_key)
+{
+  const string keyext = objexp_hint_get_keyext(bucket_name,
+          bucket_id, obj_key);
+  objexp_hint_entry he = {
+      .bucket_name = bucket_name,
+      .bucket_id = bucket_id,
+      .obj_key = obj_key,
+      .exp_time = delete_at };
+  bufferlist hebl;
+  ::encode(he, hebl);
+  ObjectWriteOperation op;
+  cls_timeindex_add(op, delete_at, keyext, hebl);
+
+  string shard_name = objexp_hint_get_shardname(objexp_key_shard(obj_key));
+  return objexp_pool_ctx.operate(shard_name, &op);
+}
+
+void  RGWRados::objexp_get_shard(int shard_num,
+                                 string& shard)                       /* out */
+{
+  shard = objexp_hint_get_shardname(shard_num);
+}
+
+int RGWRados::objexp_hint_list(const string& oid,
+                               const utime_t& start_time,
+                               const utime_t& end_time,
+                               const int max_entries,
+                               const string& marker,
+                               list<cls_timeindex_entry>& entries, /* out */
+                               string *out_marker,                 /* out */
+                               bool *truncated)                    /* out */
+{
+  librados::ObjectReadOperation op;
+  cls_timeindex_list(op, start_time, end_time, marker, max_entries, entries,
+	       out_marker, truncated);
+
+  bufferlist obl;
+  int ret = objexp_pool_ctx.operate(oid, &op, &obl);
+
+  if ((ret < 0 ) && (ret != -ENOENT)) {
+    return ret;
+  }
+
+  if ((ret == -ENOENT) && truncated) {
+    *truncated = false;
+  }
+
+  return 0;
+}
+
+int RGWRados::objexp_hint_parse(cls_timeindex_entry &ti_entry,  /* in */
+                                objexp_hint_entry& hint_entry)  /* out */
+{
+  try {
+    bufferlist::iterator iter = ti_entry.value.begin();
+    ::decode(hint_entry, iter);
+  } catch (buffer::error& err) {
+    ldout(cct, 0) << "ERROR: couldn't decode avail_pools" << dendl;
+  }
+
+  return 0;
+}
+
+int RGWRados::objexp_hint_trim(const string& oid,
+                               const utime_t& start_time,
+                               const utime_t& end_time,
+                               const string& from_marker,
+                               const string& to_marker)
+{
+  int ret = cls_timeindex_trim(objexp_pool_ctx, oid, start_time, end_time,
+          from_marker, to_marker);
+  if ((ret < 0 ) && (ret != -ENOENT)) {
+    return ret;
+  }
+
+  return 0;
+}
 
 int RGWRados::lock_exclusive(rgw_bucket& pool, const string& oid, utime_t& duration, 
                              string& zone_id, string& owner_id) {
@@ -3540,6 +3691,8 @@ int RGWRados::Bucket::List::list_objects(int max, vector<RGWObjEnt> *result,
       rgw_obj_key key = obj;
       string instance;
       string ns;
+      //guokexin list obj
+      ldout(cct , 20) << key.name << dendl;
 
       bool valid = rgw_obj::parse_raw_oid(obj.name, &obj.name, &instance, &ns);
       if (!valid) {
@@ -4487,6 +4640,8 @@ int RGWRados::Object::Write::write_meta(uint64_t size,
   RGWRados::Bucket bop(store, bucket);
   RGWRados::Bucket::UpdateIndex index_op(&bop, obj, state);
 
+/*Begin deleted by lujiafu*/
+#if 1
   if (versioned_op) {
     index_op.set_bilog_flags(RGW_BILOG_FLAG_VERSIONED_OP);
   }
@@ -4494,6 +4649,8 @@ int RGWRados::Object::Write::write_meta(uint64_t size,
   r = index_op.prepare(CLS_RGW_OP_ADD);
   if (r < 0)
     return r;
+#endif
+/*End delete*/
 
   r = ref.ioctx.operate(ref.oid, &op);
   if (r < 0) { /* we can expect to get -ECANCELED if object was replaced under,
@@ -4528,6 +4685,18 @@ int RGWRados::Object::Write::write_meta(uint64_t size,
     r = store->set_olh(target->get_ctx(), target->get_bucket_info(), obj, false, NULL, meta.olh_epoch);
     if (r < 0) {
       return r;
+    }
+  }
+
+  if (meta.delete_at > 0) {
+    rgw_obj_key obj_key;
+    obj.get_index_key(&obj_key);
+
+    ldout(store->ctx() , 0) << "objexp_hint_add" << dendl;
+    r = store->objexp_hint_add(utime_t(meta.delete_at, 0), bucket.name, bucket.bucket_id, obj_key);
+    if (r < 0) {
+      ldout(store->ctx(), 0) << "ERROR: objexp_hint_add() returned r=" << r << ", object will not get removed" << dendl;
+      /* ignoring error, nothing we can do at this point */
     }
   }
 
@@ -4770,8 +4939,8 @@ public:
     processor->set_extra_data_len(len);
   }
 
-  int complete(string& etag, time_t *mtime, time_t set_mtime, map<string, bufferlist>& attrs) {
-    return processor->complete(etag, mtime, set_mtime, attrs);
+  int complete(string& etag, time_t *mtime, time_t set_mtime, map<string, bufferlist>& attrs, time_t delete_at) {
+    return processor->complete(etag, mtime, set_mtime, attrs, delete_at);
   }
 };
 
@@ -4834,7 +5003,7 @@ int RGWRados::rewrite_obj(RGWBucketInfo& dest_bucket_info, rgw_obj& obj)
     return ret;
   }
 
-  return copy_obj_data(rctx, dest_bucket_info, read_op, end, obj, obj, max_chunk_size, NULL, mtime, attrset, RGW_OBJ_CATEGORY_MAIN, 0, NULL, NULL, NULL, NULL);
+  return copy_obj_data(rctx, dest_bucket_info, read_op, end, obj, obj, max_chunk_size, NULL, mtime, attrset, RGW_OBJ_CATEGORY_MAIN, 0, 0, NULL, NULL, NULL, NULL);
 }
 
 int RGWRados::fetch_remote_obj(RGWObjectCtx& obj_ctx,
@@ -4857,6 +5026,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& obj_ctx,
                map<string, bufferlist>& attrs,
                RGWObjCategory category,
                uint64_t olh_epoch,
+	       time_t delete_at,
                string *version_id,
                string *ptag,
                string *petag,
@@ -4937,6 +5107,20 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& obj_ctx,
       JSONDecoder::decode_json("attrs", src_attrs, &jp);
 
       src_attrs.erase(RGW_ATTR_MANIFEST); // not interested in original object layout
+      if (source_zone.empty()) { /* need to preserve expiration if copy in the same zonegroup */
+        src_attrs.erase(RGW_ATTR_DELETE_AT);
+      } else {
+	map<string, bufferlist>::iterator iter = src_attrs.find(RGW_ATTR_DELETE_AT);
+	if (iter != src_attrs.end()) {
+	  try {
+	    utime_t da;
+	    ::decode(da, iter->second);
+	    delete_at = (time_t)da.sec();
+	  } catch (buffer::error& err) {
+	    ldout(cct, 0) << "ERROR: failed to decode delete_at field in intra zone copy" << dendl;
+	  }
+	}
+      }
     }
   }
 
@@ -4958,7 +5142,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& obj_ctx,
     attrs = src_attrs;
   }
 
-  ret = cb.complete(etag, mtime, set_mtime, attrs);
+  ret = cb.complete(etag, mtime, set_mtime, attrs, delete_at);
   if (ret < 0) {
     goto set_err_state;
   }
@@ -5039,6 +5223,7 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
                map<string, bufferlist>& attrs,
                RGWObjCategory category,
                uint64_t olh_epoch,
+	       time_t delete_at,
                string *version_id,
                string *ptag,
                string *petag,
@@ -5071,7 +5256,7 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
     return fetch_remote_obj(obj_ctx, user_id, client_id, op_id, info, source_zone,
                dest_obj, src_obj, dest_bucket_info, src_bucket_info, src_mtime, mtime, mod_ptr,
                unmod_ptr, if_match, if_nomatch, attrs_mod, attrs, category,
-               olh_epoch, version_id, ptag, petag, err, progress_cb, progress_data);
+               olh_epoch, delete_at, version_id, ptag, petag, err, progress_cb, progress_data);
   }
 
   map<string, bufferlist> src_attrs;
@@ -5096,6 +5281,7 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
   }
 
   src_attrs[RGW_ATTR_ACL] = attrs[RGW_ATTR_ACL];
+  src_attrs.erase(RGW_ATTR_DELETE_AT);
 
   set_copy_attrs(src_attrs, attrs, attrs_mod);
   attrs.erase(RGW_ATTR_ID_TAG);
@@ -5165,7 +5351,7 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
 
   if (copy_data) { /* refcounting tail wouldn't work here, just copy the data */
     return copy_obj_data(obj_ctx, dest_bucket_info, read_op, end, dest_obj, src_obj,
-                         max_chunk_size, mtime, 0, attrs, category, olh_epoch,
+                         max_chunk_size, mtime, 0, attrs, category, olh_epoch, delete_at,
                          version_id, ptag, petag, err);
   }
 
@@ -5268,6 +5454,7 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
   write_op.meta.flags = PUT_OBJ_CREATE;
   write_op.meta.category = category;
   write_op.meta.olh_epoch = olh_epoch;
+  write_op.meta.delete_at = delete_at;
 
   ret = write_op.write_meta(end + 1, attrs);
   if (ret < 0) {
@@ -5311,6 +5498,7 @@ int RGWRados::copy_obj_data(RGWObjectCtx& obj_ctx,
                map<string, bufferlist>& attrs,
                RGWObjCategory category,
                uint64_t olh_epoch,
+	       time_t delete_at,
                string *version_id,
                string *ptag,
                string *petag,
@@ -5370,7 +5558,7 @@ int RGWRados::copy_obj_data(RGWObjectCtx& obj_ctx,
     }
   }
 
-  ret = processor.complete(etag, mtime, set_mtime, attrs);
+  ret = processor.complete(etag, mtime, set_mtime, attrs, delete_at);
 
   return ret;
 }
@@ -5853,6 +6041,25 @@ int RGWRados::Object::Delete::delete_obj()
 
   uint64_t obj_size = state->size;
 
+  if (!params.expiration_time.is_zero()) {
+    bufferlist bl;
+    utime_t delete_at;
+
+    if (state->get_attr(RGW_ATTR_DELETE_AT, bl)) {
+      try {
+        bufferlist::iterator iter = bl.begin();
+        ::decode(delete_at, iter);
+      } catch (buffer::error& err) {
+        ldout(store->ctx(), 0) << "ERROR: couldn't decode RGW_ATTR_DELETE_AT" << dendl;
+	return -EIO;
+      }
+
+      if (params.expiration_time != delete_at) {
+        return -ERR_PRECONDITION_FAILED;
+      }
+    }
+  }
+
   ObjectWriteOperation op;
 
   r = target->prepare_atomic_modification(op, false, NULL, NULL, NULL, true);
@@ -5914,8 +6121,12 @@ int RGWRados::Object::Delete::delete_obj()
   return 0;
 }
 
-int RGWRados::delete_obj(RGWObjectCtx& obj_ctx, RGWBucketInfo& bucket_info, rgw_obj& obj,
-                         int versioning_status, uint16_t bilog_flags)
+int RGWRados::delete_obj(RGWObjectCtx& obj_ctx,
+                         RGWBucketInfo& bucket_info,
+                         rgw_obj& obj,
+                         int versioning_status,
+                         uint16_t bilog_flags,
+                         const utime_t& expiration_time)
 {
   RGWRados::Object del_target(this, bucket_info, obj_ctx, obj);
   RGWRados::Object::Delete del_op(&del_target);
@@ -5923,6 +6134,7 @@ int RGWRados::delete_obj(RGWObjectCtx& obj_ctx, RGWBucketInfo& bucket_info, rgw_
   del_op.params.bucket_owner = bucket_info.owner;
   del_op.params.versioning_status = versioning_status;
   del_op.params.bilog_flags = bilog_flags;
+  del_op.params.expiration_time = expiration_time;
 
   return del_op.delete_obj();
 }
@@ -6432,6 +6644,20 @@ int RGWRados::set_attrs(void *ctx, rgw_obj& obj,
       continue;
 
     op.setxattr(name.c_str(), bl);
+
+    if (name.compare(RGW_ATTR_DELETE_AT) == 0) {
+      utime_t ts;
+      try {
+        ::decode(ts, bl);
+
+        rgw_obj_key obj_key;
+        obj.get_index_key(&obj_key);
+
+        objexp_hint_add(ts, bucket.name, bucket.bucket_id, obj_key);
+      } catch (buffer::error& err) {
+	ldout(cct, 0) << "ERROR: failed to decode " RGW_ATTR_DELETE_AT << " attr" << dendl;
+      }
+    }
   }
 
   if (!op.size())
@@ -6749,7 +6975,11 @@ int RGWRados::Bucket::UpdateIndex::complete(int64_t poolid, uint64_t epoch, uint
   ent.owner = owner.get_id();
   ent.owner_display_name = owner.get_display_name();
   ent.content_type = content_type;
-
+#if 0
+  /*Begin added by lujiafu*/
+  optag = "";
+  /*End added*/
+#endif
   ret = store->cls_obj_complete_add(*bs, optag, poolid, epoch, ent, category, remove_objs, bilog_flags);
 
   return ret;
@@ -9755,6 +9985,12 @@ int RGWRados::list_gc_objs(int *index, string& marker, uint32_t max, bool expire
 int RGWRados::process_gc()
 {
   return gc->process();
+}
+
+int RGWRados::process_expire_objects()
+{
+  obj_expirer->inspect_all_shards(utime_t(), ceph_clock_now(cct));
+  return 0;
 }
 
 int RGWRados::cls_rgw_init_index(librados::IoCtx& index_ctx, librados::ObjectWriteOperation& op, string& oid)

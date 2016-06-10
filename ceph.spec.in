@@ -462,7 +462,7 @@ for i in /usr/{lib64,lib}/jvm/java/include{,/linux}; do
 done
 %endif
 
-./autogen.sh
+./autogen.sh yes
 MY_CONF_OPT=""
 
 MY_CONF_OPT="$MY_CONF_OPT --with-radosgw"
@@ -483,6 +483,7 @@ export RPM_OPT_FLAGS=`echo $RPM_OPT_FLAGS | sed -e 's/i386/i486/'`
 %endif
 		--without-babeltrace \
 		--with-tcmalloc-minimal \
+		--with-xstore \
 		--without-lttng \
 		--with-librocksdb-static=check \
 		$MY_CONF_OPT \
@@ -622,6 +623,7 @@ fi
 %{_libdir}/rados-classes/libcls_rbd.so*
 %{_libdir}/rados-classes/libcls_hello.so*
 %{_libdir}/rados-classes/libcls_rgw.so*
+%{_libdir}/rados-classes/libcls_timeindex.so*
 %{_libdir}/rados-classes/libcls_lock.so*
 %{_libdir}/rados-classes/libcls_kvs.so*
 %{_libdir}/rados-classes/libcls_refcount.so*
@@ -747,6 +749,7 @@ fi
 %{_initrddir}/ceph-radosgw
 %{_bindir}/radosgw
 %{_bindir}/radosgw-admin
+%{_bindir}/radosgw-object-expirer
 %{_mandir}/man8/radosgw.8*
 %{_mandir}/man8/radosgw-admin.8*
 %{_sbindir}/rcceph-radosgw
