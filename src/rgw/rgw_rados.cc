@@ -4641,7 +4641,7 @@ int RGWRados::Object::Write::write_meta(uint64_t size,
   RGWRados::Bucket::UpdateIndex index_op(&bop, obj, state);
 
 /*Begin deleted by lujiafu*/
-#if 0
+#if 1
   if (versioned_op) {
     index_op.set_bilog_flags(RGW_BILOG_FLAG_VERSIONED_OP);
   }
@@ -6975,11 +6975,11 @@ int RGWRados::Bucket::UpdateIndex::complete(int64_t poolid, uint64_t epoch, uint
   ent.owner = owner.get_id();
   ent.owner_display_name = owner.get_display_name();
   ent.content_type = content_type;
-
+#if 0
   /*Begin added by lujiafu*/
   optag = "";
   /*End added*/
-
+#endif
   ret = store->cls_obj_complete_add(*bs, optag, poolid, epoch, ent, category, remove_objs, bilog_flags);
 
   return ret;
