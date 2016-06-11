@@ -1582,10 +1582,6 @@ void RGWRados::rgw_show_op_stat(Formatter * f)
 
 int RGWRados::write_bgt_change_log(rgw_bucket& bucket, rgw_obj& obj, uint64_t obj_len)
 {
-  /*Begin added by Lujiafu for suyanyuan test*/
-  return 0;
-  /*End add*/
-  
   if (obj_len >= cct->_conf->rgw_bgt_merged_src_obj_max_size)
   {
     ldout(cct, 0) << "obj size " << obj_len << ", is bigger than " << cct->_conf->rgw_bgt_merged_src_obj_max_size << dendl; 
