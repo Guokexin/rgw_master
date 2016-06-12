@@ -10997,7 +10997,9 @@ uint64_t RGWRados::next_bucket_id()
   return ++max_bucket_id;
 }
 
-RGWRados *RGWStoreManager::init_storage_provider(CephContext *cct, bool use_gc_thread, bool quota_threads)
+/*Begin modified by lujiafu*/
+RGWRados *RGWStoreManager::init_storage_provider(CephContext *cct, bool use_gc_thread, bool quota_threads, void* usr_data)
+/*End modified*/
 {
   int use_cache = cct->_conf->rgw_cache_enabled;
   RGWRados *store = NULL;
@@ -11007,6 +11009,9 @@ RGWRados *RGWStoreManager::init_storage_provider(CephContext *cct, bool use_gc_t
     store = new RGWCache<RGWRados>; 
   }
 
+  /*Begin added by lujiafu*/
+  store->set_fe_list(usr_data);
+  /*End added*/
   if (store->initialize(cct, use_gc_thread, quota_threads) < 0) {
     delete store;
     return NULL;

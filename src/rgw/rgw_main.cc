@@ -1091,8 +1091,13 @@ int main(int argc, const char **argv)
   //ac->init();
   /* End added */
   int r = 0;
+
+  list<RGWFrontend *> fes;
+  /*Begin modified by lujiafu*/
   RGWRados *store = RGWStoreManager::get_storage(g_ceph_context,
-      g_conf->rgw_enable_gc_threads, g_conf->rgw_enable_quota_threads);
+      g_conf->rgw_enable_gc_threads, g_conf->rgw_enable_quota_threads, (void*)&fes);
+  /*End modified*/
+
   if (!store) {
     mutex.Lock();
     init_timer.cancel_all_events();
@@ -1201,11 +1206,6 @@ int main(int argc, const char **argv)
     fe_map.insert(pair<string, RGWFrontendConfig*>(framework, config));
   }
 
-  list<RGWFrontend *> fes;
-  /*Begin added by lujiafu*/
-  store->set_fe_list((void*)&fes);
-  /*End added*/
-  
   for (multimap<string, RGWFrontendConfig *>::iterator fiter = fe_map.begin(); fiter != fe_map.end(); ++fiter) {
     RGWFrontendConfig *config = fiter->second;
     string framework = config->get_framework();

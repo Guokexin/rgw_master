@@ -2510,16 +2510,20 @@ public:
 class RGWStoreManager {
 public:
   RGWStoreManager() {}
-  static RGWRados *get_storage(CephContext *cct, bool use_gc_thread, bool quota_threads) {
-    RGWRados *store = init_storage_provider(cct, use_gc_thread, quota_threads);
+	/*Begin modified by lujiafu*/
+  static RGWRados *get_storage(CephContext *cct, bool use_gc_thread, bool quota_threads, void* usr_data = NULL) {
+    RGWRados *store = init_storage_provider(cct, use_gc_thread, quota_threads, usr_data);
     return store;
   }
+	/*End modified*/
   static RGWRados *get_raw_storage(CephContext *cct) {
     RGWRados *store = init_raw_storage_provider(cct);
     return store;
   }
-  static RGWRados *init_storage_provider(CephContext *cct, bool use_gc_thread, bool quota_threads);
-  static RGWRados *init_raw_storage_provider(CephContext *cct);
+	/*Begin modified by lujiafu*/
+  static RGWRados *init_storage_provider(CephContext *cct, bool use_gc_thread, bool quota_threads, void* usr_data = NULL);
+	/*End modified*/
+	static RGWRados *init_raw_storage_provider(CephContext *cct);
   static void close_storage(RGWRados *store);
 
 };
