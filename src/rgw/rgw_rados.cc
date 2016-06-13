@@ -7543,7 +7543,8 @@ struct get_obj_data : public RefCountedObject {
       return 0;
     }
     /*Begin modified by lujiafu*/
-    if (typeid(*(this->client_cb)) != typeid(RGWArchiveOp_CB))
+    //if (typeid(*(this->client_cb)) != typeid(RGWArchiveOp_CB))
+    if (1) //Modified for CMCC Test
     {
       AioCompletion *completion = aiter->second;
       int r = completion->get_return_value();
@@ -7648,7 +7649,8 @@ void RGWRados::get_obj_aio_completion_cb(completion_t c, void *arg)
   d->throttle.put(len);
 
   /*Begin modified by lujiafu*/
-  if (typeid(*(d->client_cb)) != typeid(RGWArchiveOp_CB))
+  //if (typeid(*(d->client_cb)) != typeid(RGWArchiveOp_CB))
+  if (1) //Modified for CMCC Test
   {
     r = rados_aio_get_return_value(c);
     if (r < 0) {
