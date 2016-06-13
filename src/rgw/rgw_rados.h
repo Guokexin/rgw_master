@@ -1687,7 +1687,7 @@ public:
     int complete_atomic_modification();
 
   public:
-    Object(RGWRados *_store, RGWBucketInfo& _bucket_info, RGWObjectCtx& _ctx, rgw_obj& _obj) : store(_store), bucket_info(_bucket_info),
+    Object(RGWRados *_store, RGWBucketInfo& _bucket_info, RGWObjectCtx& _ctx, const rgw_obj& _obj) : store(_store), bucket_info(_bucket_info),
                                                                                                ctx(_ctx), obj(_obj), bs(store),
                                                                                                state(NULL), versioning_disabled(false),
                                                                                                bs_initialized(false) {}
@@ -2070,7 +2070,7 @@ public:
   /** Delete an object.*/
   virtual int delete_obj(RGWObjectCtx& obj_ctx,
                          RGWBucketInfo& bucket_owner,
-                         rgw_obj& src_obj,
+                         const rgw_obj& src_obj,
                          int versioning_status,
                          uint16_t bilog_flags = 0,
                          const utime_t& expiration_time = utime_t());
@@ -2595,8 +2595,8 @@ public:
     store = _store;
     return 0;
   }
-  virtual int handle_data(bufferlist& bl, off_t ofs, MD5 *hash, void **phandle, bool *again) = 0;
-  virtual int throttle_data(void *handle, bool need_to_wait) = 0;
+  virtual int handle_data(bufferlist& bl, off_t ofs, MD5 *hash, void **phandle, rgw_obj *pobj, bool *again) = 0;
+  virtual int throttle_data(void *handle, const rgw_obj& obj, bool need_to_wait) = 0;
   virtual void complete_hash(MD5 *hash) {
     assert(0);
   }
@@ -2609,6 +2609,7 @@ public:
 
 struct put_obj_aio_info {
   void *handle;
+  rgw_obj obj;
 };
 
 class RGWPutObjProcessor_Aio : public RGWPutObjProcessor
@@ -2625,10 +2626,10 @@ class RGWPutObjProcessor_Aio : public RGWPutObjProcessor
 protected:
   uint64_t obj_len;
 
-  list<rgw_obj> written_objs;
+  set<rgw_obj> written_objs;
 
   void add_written_obj(const rgw_obj& obj) {
-    written_objs.push_back(obj);
+    written_objs.insert(obj);
   }
 
   int drain_pending();
@@ -2637,7 +2638,7 @@ protected:
   int handle_obj_data_for_compress(rgw_obj& obj, bufferlist& bl, off_t ofs, off_t abs_ofs, void **phandle, bool exclusive);
   /* End added */
 public:
-  int throttle_data(void *handle, bool need_to_wait);
+  int throttle_data(void *handle, const rgw_obj& obj, bool need_to_wait);
 
   RGWPutObjProcessor_Aio(RGWObjectCtx& obj_ctx, RGWBucketInfo& bucket_info) : RGWPutObjProcessor(obj_ctx, bucket_info), max_chunks(RGW_MAX_PENDING_CHUNKS), obj_len(0) {}
   virtual ~RGWPutObjProcessor_Aio();
@@ -2681,7 +2682,7 @@ protected:
   RGWObjManifest manifest;
   RGWObjManifest::generator manifest_gen;
 
-  int write_data(bufferlist& bl, off_t ofs, void **phandle, bool exclusive);
+  int write_data(bufferlist& bl, off_t ofs, void **phandle, rgw_obj *pobj, bool exclusive);
   /* Begin added by hechuang */
   int compress_data(bufferlist& bl);
   int check_compress_and_blocking(bool blocking, bool exclusive);
@@ -2719,7 +2720,7 @@ public:
     extra_data_len = len;
   }
   virtual int data_merger(bufferlist& bl,off_t ofs, bool exclusive);     //added by hechuang
-  virtual int handle_data(bufferlist& bl, off_t ofs, MD5 *hash, void **phandle, bool *again);
+  virtual int handle_data(bufferlist& bl, off_t ofs, MD5 *hash, void **phandle, rgw_obj *pobj, bool *again);
   virtual void complete_hash(MD5 *hash);
   bufferlist& get_extra_data() { return extra_data_bl; }
 
