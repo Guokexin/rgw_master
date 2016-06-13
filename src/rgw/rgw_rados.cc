@@ -1152,7 +1152,7 @@ int RGWPutObjProcessor_Atomic::check_compress_and_blocking(bool blocking, bool e
       }
 */    
       
-      r = throttle_data(handle, exclusive);
+      r = 0;//throttle_data(handle, exclusive);//For CMCC Test
       if (r < 0) {
         ldout(store->ctx(), 0) << "ERROR: throttle_data() returned " << r << dendl;
         return r;
