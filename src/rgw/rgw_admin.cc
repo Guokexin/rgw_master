@@ -120,6 +120,8 @@ void _usage()
   cerr << "  replicalog delete          delete replica metadata log entry\n";
   cout << "  orphans find               init and run search for leaked rados objects\n";
   cout << "  orphans finish             clean up search for leaked rados objects\n";
+  cout << "  scheduler create           create a new archive server instance\n";
+  cout << "  scheduler update           update a exist archive server instance\n";
   cerr << "options:\n";
   cerr << "   --uid=<id>                user id\n";
   cerr << "   --subuser=<name>          subuser name\n";
@@ -1111,6 +1113,53 @@ int do_check_object_locator(const string& bucket_name, bool fix, bool remove_bad
 
   return 0;
 }
+
+
+//begin added by guokexin
+int create_archive_instance( std::string  index_pool , std::string archive_pool) {
+  return 0;
+/*
+  int r = 0 ;
+
+  std::string prefix = "" ;
+  std::string pool = pool_name;
+  librados::IoCtx io_ctx;
+  if(store != NULL) {
+    librados::Rados *rados = store->get_rados_handle() ;
+    if ( rados != NULL ) {  
+      std::string pool = g_ceph_context->_conf->rgw_primary_pool;
+      r = rados->ioctx_create(pool.c_str(), io_ctx);
+      if (r < 0)
+      {
+        cerr << "error create ioctx " << std::endl;
+        return ;
+      } 
+      else {
+
+        std::string  name = "xsky.manager.archive.task.inst";
+        r = io_ctx.create(m_name, true);
+        if (r != 0 && -EEXIST != r)
+        {
+            cerr << "error create obj " << name << " in pool " << pool << ": "
+                    << cpp_strerror(r) << std::dendl;
+            return r;
+        }
+        if (-EEXIST == r)
+        {
+            ldout(m_cct, 10) << "obj " << name << " has existed in pool " << m_pool << ": "
+                    << cpp_strerror(r) << dendl;
+            r = 0;
+        }
+        //=============================================================
+        
+        //=============================================================
+      }
+    }
+  }
+*/
+}
+
+//
 
 
 int main(int argc, char **argv) 

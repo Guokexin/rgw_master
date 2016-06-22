@@ -1459,7 +1459,12 @@ int RGWPutObjProcessor_Atomic::do_complete(string& etag, time_t *mtime, time_t s
   {
     store->set_sfm_delete_flag(merge_ref);
   }  
-  store->write_bgt_change_log(bucket_info.bucket, head_obj, obj_len);
+  
+  //begin add guokexin 20160622
+  if(bucket_info.bucket.archive) {
+    store->write_bgt_change_log(bucket_info.bucket, head_obj, obj_len);
+  }
+  //end added
   /*End added*/
 
   return 0;
@@ -1655,13 +1660,14 @@ int RGWRados::write_bgt_change_log(rgw_bucket& bucket, rgw_obj& obj, uint64_t ob
   RGWBgtManager* manager = RGWBgtManager::instance( );
   RGWBgtScheduler* scheduler = manager->get_adapter_scheduler(bucket.index_pool);
   //End 
-  if( scheduler ) {     
+  if(scheduler ) {     
     //ldout(cct , 0 ) << "appending log " << dendl;
     r = scheduler->write_change_log(log_entry);    
   }
   else {
     ldout(cct , 20) << "scheduler == null" << dendl;
   }
+
   if (r < 0)
   {
     ldout(cct, 0) << "write change log failed:" << cpp_strerror(r) << dendl; 
