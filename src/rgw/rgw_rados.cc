@@ -1480,7 +1480,6 @@ bool RGWRados::CommandHook::call(std::string command, cmdmap_t& cmdmap,
   m_rados->lock.Lock();
 
 
-  //Begin added by guokexin
   if (command == "scheduler create") {
       std::string var;
       std::vector<std::string> val;
@@ -1494,13 +1493,36 @@ bool RGWRados::CommandHook::call(std::string command, cmdmap_t& cmdmap,
           if( manager ) {
              ldout(m_rados->cct , 0) << "hot_pool " <<var << "cold_pool "<<val[0] << dendl; 
              std::string name = "";
-             manager->gen_scheduler_instance(var,val[0], name);
+             int nRet = manager->gen_scheduler_instance(var,val[0], name);
              
-             std::string ss("create scheduler"); 
-             f->dump_string("create scheduler",var);
+             f->open_object_section("scheduler create");
+             f->dump_int("result",nRet); // 0 succ , others fail
+             f->close_section();
         }
      }
   }
+  else if (command == "scheduler update") {
+      std::string var;
+      std::vector<std::string> val;
+
+      if (!(cmd_getval(m_rados->cct, cmdmap, "var", var)) ||
+          !(cmd_getval(m_rados->cct, cmdmap, "val", val))) {
+        f->dump_string("error", "syntax error: 'scheduler update <var> <value>'");
+      } 
+      else {
+          RGWBgtManager* manager = RGWBgtManager::instance();
+          if( manager ) {
+             ldout(m_rados->cct , 0) << "hot_pool " <<var << "cold_pool "<<val[0] << dendl; 
+             std::string name = "";
+             int nRet = manager->update_scheduler_instance(var,val[0], name);
+             f->open_object_section("scheduler update"); 
+             f->dump_int("result",nRet);
+             f->close_section();
+        }
+     }
+  }
+ 
+
   else if (command == "req_stat_dump")
   {
     m_rados->rgw_show_op_stat(f);

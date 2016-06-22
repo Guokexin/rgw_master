@@ -1463,7 +1463,7 @@ class RGWBgtManager : public Thread {
   friend class RGWBgtWorker;
   friend class RGWBgtScheduler;
   private:
-    RGWBgtManager( ):m_manager_inst_obj(NULL),m_merger_inst_obj(NULL),app_num(0),worker_num(0),m_store(NULL),m_cct(NULL),archive_num(0),stopping(true)
+    RGWBgtManager( ):m_manager_inst_obj(NULL),m_merger_inst_obj(NULL),app_num(0),worker_num(0),m_store(NULL),m_cct(NULL),archive_num(0),stopping(true),b_reload_workers(false)
      { 
        
      };
@@ -1512,10 +1512,12 @@ class RGWBgtManager : public Thread {
 	  Mutex*  schedulers_data_lock;
     Mutex*  workers_data_lock;
     Mutex*  lock;
+    Mutex*  merger_speed_lock;
     time_t  pre_check_worker_time;
     time_t  pre_reload_scheduler_info_time;
     atomic64_t  archive_num;
     std::list<uint64_t>  archive_v_queue;
+    std::vector<uint64_t>  merger_v_ret;
     time_t pre_snap_v_time;
     
   //private:
@@ -1527,6 +1529,8 @@ class RGWBgtManager : public Thread {
     RGWBgtScheduler* get_adapter_scheduler_from_name(std::string& scheduler_name);
     //product a scheduler instance, succ return 0 , fail return -1
     int gen_scheduler_instance(std::string& hot_pool, std::string& cold_pool, std::string& scheduler_name);
+    //product a scheduler instance, succ return 0 , fail return -1
+    int update_scheduler_instance(std::string& hot_pool, std::string& cold_pool, std::string& scheduler_name);
     //get a worker instance pointer according to para1 (merger_name)
     RGWBgtWorker* get_adapter_merger(std::string& merge_name);
     
@@ -1546,6 +1550,7 @@ class RGWBgtManager : public Thread {
     int reload_scheduler( );
     int reload_workers( );
     void snap_archive_v( );
+    void  gen_merger_speed(vector<uint64_t>& vec);
     //thread function implement
    public:
     void *entry();
@@ -1557,6 +1562,8 @@ class RGWBgtManager : public Thread {
     bool stopping; 
     Cond cond;
 
+  public:
+    bool b_reload_workers;
 };
 
 

@@ -54,16 +54,20 @@ using namespace libradosstriper;
 #include "rgw_bgt.h"
 
 #define dout_subsys ceph_subsys_rgw
-
+/*
 #define MERGER_QUEUE_MEMBER_SIZE 100
-#define WORKER_IDLE_TIMESPAN 3600
+#define WORKER_IDLE_TIMESPAN 5
 #define RELOAD_SCHEDULER_INFO_TIMESPAN 60
 #define QUEUE_BATCH_SIZE 2
 #define SNAP_MERGER_V 60
+*/
 using namespace std;
 
 
 #define dout_subsys ceph_subsys_rgw
+
+
+
 
 std::string rgw_unique_lock_name(const std::string &name, void *address) 
 {
@@ -647,7 +651,6 @@ int RGWBgtScheduler::set_active_change_log(RGWBgtLogTransInfo& log_trans_info)
   int r;
   bufferlist bl;
   std :: map < std :: string,bufferlist > values;
-  
   ::encode(log_trans_info.pending_active_change_log, bl);
   values[RGW_BGT_ACTIVE_CHANGE_LOG_KEY] = bl;
   r = m_instobj->m_io_ctx.omap_set(m_name, values);
@@ -843,13 +846,13 @@ void RGWBgtScheduler::dispatch_task(RGWBgtBatchTaskInfo& batch_task_info , std::
         }
       }
     }
-    utime_t end_time = ceph_clock_now(m_cct);
-    uint64_t cost = (end_time.to_msec() - batch_task_info.start_time.to_msec())/1000;
-    uint32_t speed = 0;
-    if (cost > 0)
-      speed = change_logs[batch_task_info.log_name].log_cnt / cost;
-    ldout(m_cct, 0) << "batch task for " << batch_task_info.log_name << " finished, merge speed " << speed << ", total merged object:" << g_total_sfm << dendl;
-    ldout(m_cct, 10) << "enter RGW_BGT_BATCH_TASK_WAIT_RM_LOG" << dendl;
+    //utime_t end_time = ceph_clock_now(m_cct);
+    //uint64_t cost = (end_time.to_msec() - batch_task_info.start_time.to_msec())/1000;
+    //uint32_t speed = 0;
+    //if (cost > 0)
+    //  speed = change_logs[batch_task_info.log_name].log_cnt / cost;
+    //ldout(m_cct, 0) << "batch task for " << batch_task_info.log_name << " finished, merge speed " << speed << ", total merged object:" << g_total_sfm << dendl;
+    ldout(m_cct, 0) << "enter RGW_BGT_BATCH_TASK_WAIT_RM_LOG" << dendl;
     batch_task_info.stage = RGW_BGT_BATCH_TASK_WAIT_RM_LOG;
     set_batch_task_info(batch_task_info,task_name);
     //wait_task_finish = false;
@@ -1514,7 +1517,7 @@ void RGWBgtScheduler::check_batch_task() {
 
   //ldout(m_cct , 5) << "check_batch_task 02" << dendl;
 
-  if ( m_processing_task_inst.size() < QUEUE_BATCH_SIZE &&  iter != order_change_logs.end()) {
+  if ( m_processing_task_inst.size() < m_cct->_conf->rgw_batch_task_num/*QUEUE_BATCH_SIZE*/ &&  iter != order_change_logs.end()) {
  
     //create batch inst obj
     std::string batch_inst_name = RGW_BGT_BATCH_INST_PREFIX + (*iter).second; 
@@ -1765,6 +1768,7 @@ void RGWBgtScheduler::check_log_trans()
   RGWBgtLogTransInfo log_trans_info;
   int r;
   
+
   r = get_log_trans_info(log_trans_info);
   if (0 != r)
   {
@@ -1900,10 +1904,12 @@ void RGWBgtScheduler::check_log_trans()
           ldout(m_cct , 0) << "stat " << change_log_shard << " failed:" << cpp_strerror(r) << dendl;
         }
         
+        //
         if ((0 == r) 
           && ((size > (m_cct->_conf->rgw_bgt_change_log_max_shard*sizeof(RGWChangeLogHdr)) && 1 == force_merge_all.read()) 
-          || ((size/= (1<<20)) >= m_cct->_conf->rgw_bgt_change_log_max_size))) 
+          //|| ((size/= (1<<20)) >= m_cct->_conf->rgw_bgt_change_log_max_size))) 
           //|| ((size/= (1<<10)) >= m_cct->_conf->rgw_bgt_change_log_max_size))) 
+          || ((size) >= m_cct->_conf->rgw_bgt_change_log_max_size * 80)))  //80 is size of logentry 
         {
           ldout(m_cct , 5) << "RGW_BGT_TRANS_START  "<< "size  " << size << dendl;
           log_trans_info.stage = RGW_BGT_LOG_TRANS_START;
@@ -2291,14 +2297,14 @@ RGWBgtScheduler::RGWBgtScheduler(RGWRados* _store, CephContext* _cct, std::strin
                                        m_cct(_cct),
                                        stopping(true),
                                        wait_task_finish(false),
-                                       lock(rgw_unique_lock_name("RGWBgtScheduler::lock" + _hot_pool, this), false, true, false, _cct),
-                                       worker_data_lock(rgw_unique_lock_name("RGWBgtScheduler::worker_data_lock" + _hot_pool, this), false, true, false, _cct),
-                                       active_change_log_lock(rgw_unique_lock_name("RGWBgtScheduler::active_change_log_lock" + _hot_pool, this)), 
+                                       lock(rgw_unique_lock_name("RGWBgtScheduler::lock" + m_cct->_conf->name.to_str()+ _hot_pool, this), false, true, false, _cct),
+                                       worker_data_lock(rgw_unique_lock_name("RGWBgtScheduler::worker_data_lock"  + m_cct->_conf->name.to_str() + _hot_pool, this), false, true, false, _cct),
+                                       active_change_log_lock(rgw_unique_lock_name("RGWBgtScheduler::active_change_log_lock" + m_cct->_conf->name.to_str() + _hot_pool, this)), 
                                        max_log_id(0), 
                                        active_change_log(""),
                                        hot_pool(_hot_pool),
                                        cold_pool(_cold_pool),
-                                       update_change_log_lock(rgw_unique_lock_name("RGWBgtWorker::update_lock", this)),
+                                       update_change_log_lock(rgw_unique_lock_name("RGWBgtScheduler::update_lock" + m_cct->_conf->name.to_str() + _hot_pool, this)),
                                        change_log_num(0)
 {
 
@@ -3466,7 +3472,10 @@ void RGWBgtWorker::check_task()
     case RGW_BGT_TASK_WAIT_MERGE:
       {
         ldout(m_cct , 0) << "RGW_BGT_TASK_WAIT_MERGE" << dendl;
-        wait_merge(task_info);
+        RGWBgtManager* manager = RGWBgtManager::instance();
+        if(manager->b_reload_workers) {
+          wait_merge(task_info);
+        }
       }
       break;
 
@@ -3764,9 +3773,13 @@ int RGWBgtManager::init(RGWRados* _store, CephContext* _cct) {
   m_cct = _cct;
 
 
-  schedulers_data_lock = new Mutex(rgw_unique_lock_name("RGWBgtManager::schedulers_data_lock", this), false, true, false, m_cct);
-  workers_data_lock = new Mutex(rgw_unique_lock_name("RGWBgtManager::workers_data_lock", this), false, true, false, m_cct);
-  lock = new Mutex(rgw_unique_lock_name("RGWBgtManager::lock",this),false,true,false,m_cct);
+  std::string rgw_name = m_cct->_conf->name.to_str();
+  ldout(m_cct , 0) << "RGW Name : "<< rgw_name << dendl;
+
+  schedulers_data_lock = new Mutex(rgw_unique_lock_name(string("RGWBgtManager::schedulers_data_lock")+rgw_name, this), false, true, false, m_cct);
+  workers_data_lock = new Mutex(rgw_unique_lock_name(string("RGWBgtManager::workers_data_lock")+rgw_name, this), false, true, false, m_cct);
+  lock = new Mutex(rgw_unique_lock_name(string("RGWBgtManager::lock")+rgw_name,this),false,true,false,m_cct);
+  merger_speed_lock = new Mutex(rgw_unique_lock_name(string("RGWBgtManager::merger_speed_lock")+rgw_name,this),false,true,false,m_cct);
 
   m_manager_inst_name = RGW_BGT_MANAGER_INST ;//+ std::string("_") + m_cct->_conf->name.to_str();
   m_merger_inst_name = RGW_BGT_MANAGER_MERGER_PREFIX + m_cct->_conf->name.to_str();
@@ -3774,13 +3787,13 @@ int RGWBgtManager::init(RGWRados* _store, CephContext* _cct) {
   m_manager_inst_obj = new RGWInstanceObj(_cct->_conf->rgw_primary_pool,m_manager_inst_name ,m_store, m_cct);
   if (NULL == m_manager_inst_obj)
   {
-    ldout(m_cct, 0) << __func__ << " create RGWInstanceObj fail: " << m_cct->_conf->rgw_primary_pool << "/" <<  m_manager_inst_name << dendl;
+    ldout(m_cct , 5) << __func__ << " create RGWInstanceObj fail: " << m_cct->_conf->rgw_primary_pool << "/" <<  m_manager_inst_name << dendl;
     return -1;
   }
   ret = m_manager_inst_obj->init();
   if (ret < 0)
   {
-    ldout(m_cct, 0) << __func__ << " RGWInstanceObj init fail: " << m_cct->_conf->rgw_primary_pool << "/" << m_manager_inst_name << dendl;
+    ldout(m_cct , 5) << __func__ << " RGWInstanceObj init fail: " << m_cct->_conf->rgw_primary_pool << "/" << m_manager_inst_name << dendl;
     delete m_manager_inst_obj;
     m_manager_inst_obj = NULL;
     return ret;
@@ -3790,13 +3803,13 @@ int RGWBgtManager::init(RGWRados* _store, CephContext* _cct) {
   m_merger_inst_obj = new RGWInstanceObj(_cct->_conf->rgw_primary_pool,m_merger_inst_name ,m_store, m_cct);
   if (NULL == m_merger_inst_obj)
   {
-    ldout(m_cct, 0) << __func__ << " create RGWInstanceObj fail: " << m_cct->_conf->rgw_primary_pool << "/" <<  m_merger_inst_name << dendl;
+    ldout(m_cct , 5) << __func__ << " create RGWInstanceObj fail: " << m_cct->_conf->rgw_primary_pool << "/" <<  m_merger_inst_name << dendl;
     return -1;
   }
   ret = m_merger_inst_obj->init();
   if (ret < 0)
   {
-    ldout(m_cct, 0) << __func__ << " RGWInstanceObj init fail: " << m_cct->_conf->rgw_primary_pool << "/" << m_merger_inst_name << dendl;
+    ldout(m_cct , 5) << __func__ << " RGWInstanceObj init fail: " << m_cct->_conf->rgw_primary_pool << "/" << m_merger_inst_name << dendl;
     delete m_merger_inst_obj;
     m_merger_inst_obj = NULL;
     return ret;
@@ -3936,6 +3949,7 @@ int RGWBgtManager::reload_workers( ) {
       workers_data_lock->Unlock( );
     }
   }//for
+  b_reload_workers = true;
   return ret;
 }
 
@@ -3963,7 +3977,7 @@ int RGWBgtManager::get_scheduler_info(std::string& key , RGWSchedulerInfo& info)
   }
   else
   {
-    ldout(m_cct, 0) << " load scheduler info failed : " << cpp_strerror(r) << dendl;
+    ldout(m_cct , 0) << " load scheduler info failed : " << cpp_strerror(r) << dendl;
   }
   return r;
 }
@@ -4016,13 +4030,12 @@ RGWBgtScheduler* RGWBgtManager::get_adapter_scheduler_from_name(std::string& sch
   return scheduler;
 }
 
-
-
-int RGWBgtManager::gen_scheduler_instance(std::string& hot_pool, std::string& cold_pool, std::string& name) {
+//update scheduler instance
+int RGWBgtManager::update_scheduler_instance(std::string& hot_pool, std::string& cold_pool, std::string& name) {
   
   int ret = 0 ;
   
-  ldout(m_cct , 5) << "gen_scheduler_instance" << dendl;
+  ldout(m_cct , 5) << "update_scheduler_instance" << dendl;
   //judge scheduler'exist
   RGWBgtScheduler* scheduler = get_adapter_scheduler(hot_pool);
   if( scheduler != NULL ) {
@@ -4039,16 +4052,51 @@ int RGWBgtManager::gen_scheduler_instance(std::string& hot_pool, std::string& co
     ::encode(info,bl);
     values[key_name] = bl;
     ret = m_manager_inst_obj->m_io_ctx.omap_set(m_manager_inst_name , values ); 
+    if(ret != 0) {
+      return -2; //update failed
+    }
+    return 0;//update succ
+  }
+  else {
+    return -1;//not exist scheduler
+  }
+  return 0;
+}
+
+
+
+
+int RGWBgtManager::gen_scheduler_instance(std::string& hot_pool, std::string& cold_pool, std::string& name) {
+  
+  int ret = 0 ;
+  
+  ldout(m_cct , 5) << "gen_scheduler_instance" << dendl;
+  //judge scheduler'exist
+  RGWBgtScheduler* scheduler = get_adapter_scheduler(hot_pool);
+  if( scheduler != NULL ) {
+    return -1; //it already exist
+    //restore scheduler info,check threads relaod scheduler_info
+    /*
+    ldout(m_cct , 5) << "scheduler instance " << hot_pool << " exist, refresh it" << dendl;
+    std::string key_name;
+    key_name = RGW_BGT_SCHEDULER_INST_PREFIX + hot_pool;
+    bufferlist bl;
+    std :: map < std :: string, bufferlist > values;
+    RGWSchedulerInfo info;
+    info.hot_pool = hot_pool;
+    info.cold_pool = cold_pool;  
+    info.name = name;
+    ::encode(info,bl);
+    values[key_name] = bl;
+    ret = m_manager_inst_obj->m_io_ctx.omap_set(m_manager_inst_name , values ); 
     return ret;
+    */
   }
 
   //new scheduler instance
   RGWBgtScheduler* pScheduler = new RGWBgtScheduler(m_store, m_cct, hot_pool, cold_pool);
-  if(pScheduler) {
-
-  } 
-  else {
-    return -1;
+  if(!pScheduler) {
+    return -2;
   }
 
   std::string key_name;
@@ -4064,57 +4112,39 @@ int RGWBgtManager::gen_scheduler_instance(std::string& hot_pool, std::string& co
   ::encode(info,bl);
   values[key_name] = bl;
   ret = m_manager_inst_obj->m_io_ctx.omap_set(m_manager_inst_name , values ); 
-  
-  
-  //add it into map
-  schedulers_data_lock->Lock();
-  ret = pScheduler->init( );
-  if( ret < 0 ) {
-    ldout(m_cct , 5) << "fail to init schedule" << pScheduler->m_name << dendl;
-  }
-  m_schedulers.insert(std::pair<std::string,RGWBgtScheduler*>(pScheduler->m_name,pScheduler));
-  schedulers_data_lock->Unlock();
-  return ret;
-}
-
-RGWBgtWorker*  RGWBgtManager::get_adapter_merger(std::string& merger_name) {
- 
-  workers_data_lock->Lock();
-  RGWBgtWorker* worker = NULL;
-  std::map<std::string,RGWBgtWorker*>::iterator it = m_workers.find(merger_name);
-  if(it != m_workers.end()) {
-    worker = it->second;
-  }
-  workers_data_lock->Unlock();
-  return worker;
-}
-//
-bool RGWBgtManager::exist_idle_merge( ) {
-
-  workers_data_lock->Lock();
-  bool bexist = false;
-  ldout(m_cct , 5) << "get idle merger instance from list" << dendl;
-  std::map<std::string, RGWBgtWorker*>::iterator it ;
-  for(it = m_workers.begin(); it != m_workers.end(); it++ ) {
-    RGWBgtWorker* tworker = it->second;
-    if( 1 == tworker->get_state() ) {
-      bexist = true;
-      break;
+  if(ret != 0) { 
+    //add it into map
+    schedulers_data_lock->Lock();
+    ret = pScheduler->init( );
+    if( ret < 0 ) {
+      ldout(m_cct , 5) << "fail to init schedule" << pScheduler->m_name << dendl;
+      schedulers_data_lock->Unlock();
+      return -2; 
+    }
+    else {
+      m_schedulers.insert(std::pair<std::string,RGWBgtScheduler*>(pScheduler->m_name,pScheduler));
+      schedulers_data_lock->Unlock();
     }
   }
-  workers_data_lock->Unlock();
-  return bexist;
+  else {
+    return -100;
+  }
+
+  return 0;
 }
 //
 RGWBgtWorker*  RGWBgtManager::get_idle_merger_instance( ) {
 
  
+  ldout(m_cct , 0) << "get idle merger instance from list" << dendl;
   RGWBgtWorker* worker = NULL;
   workers_data_lock->Lock();
-  ldout(m_cct , 5) << "get idle merger instance from list" << dendl;
+  ldout(m_cct , 0) << "get_idle_merger_instance workers_data_lock.Lock" << dendl;
+  ldout(m_cct , 0) << "get idle merger instance from list size = " << m_workers.size() << dendl;
   std::map<std::string, RGWBgtWorker*>::iterator it ;
   for(it = m_workers.begin(); it != m_workers.end(); it++ ) {
     RGWBgtWorker* tworker = it->second;
+    ldout(m_cct , 0) << "get idle merger instance from list , worker_name  = " << tworker->m_name.c_str() << dendl;
     if( 1 == tworker->get_state() ) {
       worker = tworker;
       break;
@@ -4123,21 +4153,24 @@ RGWBgtWorker*  RGWBgtManager::get_idle_merger_instance( ) {
 
  
 
-  ldout(m_cct , 5) << "no found matched thread" << dendl;
+  ldout(m_cct , 0) << "no found matched thread" << dendl;
 
-  if( NULL == worker  && m_workers.size() <= MERGER_QUEUE_MEMBER_SIZE) {
-    ldout(m_cct , 5) << "Generate a new merger instance" << dendl;
+  if( NULL == worker  && m_workers.size() <=  m_cct->_conf->rgw_merger_max_threads /*MERGER_QUEUE_MEMBER_SIZE*/) {
+    ldout(m_cct , 0) << "Generate a new merger instance" << dendl;
     RGWBgtWorker* tworker = gen_merger_instance( );
     tworker->init( );
     //worker->set_state(0);
     m_workers.insert(std::pair<std::string, RGWBgtWorker*>(tworker->m_name, tworker));
   }
 
+  ldout(m_cct , 0) << "new merger instance" << dendl;
   if( NULL != worker ) {
     worker->set_state(0);
   }
 
+  //ldout(m_cct , 0) << "return worker  : " << worker->m_name.c_str() << dendl;
   workers_data_lock->Unlock();
+  ldout(m_cct , 0) << "get_idle_merger_instance workers_data_lock.Unlock" << dendl;
   return worker;
 }  
 
@@ -4178,28 +4211,24 @@ RGWBgtWorker* RGWBgtManager::gen_merger_instance( ) {
 void RGWBgtManager::check_workers( ) {
 
   workers_data_lock->Lock();
+  ldout(m_cct , 0) <<"check_workers workers_data_lock.Lock" << dendl;
   std::map< std::string , RGWBgtWorker*> :: iterator it ;
-  ldout(m_cct , 5) << "start loop check workers , size = " << m_workers.size() << dendl;
+  ldout(m_cct , 0) << "start loop check workers , size = " << m_workers.size() << dendl;
   for(it = m_workers.begin() ; it != m_workers.end() ;  ) {
-
-    ldout(m_cct , 5) << "check workers for loop" << dendl;
-     
+    ldout(m_cct , 0) << "check workers for loop" << dendl;
      RGWBgtWorker* worker = (*it).second;
-     if(NULL != worker  && worker->get_state() == 1) {
-       utime_t cur_time(ceph_clock_now(0));
-       //ldout(m_cct , 5) << "find a idle worker " << worker->m_name << dendl;
-       
-       if (cur_time.sec() - worker->pre_idle_time.sec() >= WORKER_IDLE_TIMESPAN /*&& 引用计数的判断*/) {
-        
-         ldout(m_cct , 5) << "find worker "<< worker->m_name << " , clear it" << dendl;
+     utime_t cur_time(ceph_clock_now(0));
+     if(NULL != worker  && worker->get_state() == 1 &&  cur_time.sec() - worker->pre_idle_time.sec() >= m_cct->_conf->rgw_merger_max_idle_time/*WORKER_IDLE_TIMESPAN*/ ) {
+
+         ldout(m_cct , 0) << "find worker "<< worker->m_name << " , clear it" << dendl;
          worker->m_archive_task.stop();
-         ldout(m_cct , 5) << "stop archive task" << dendl;
+         ldout(m_cct , 0) << "stop archive task" << dendl;
          worker->stop();
-         ldout(m_cct , 5) << "stop worker" << dendl;
+         ldout(m_cct , 0) << "stop worker" << dendl;
          worker->m_instobj->rm_ins_obj();
-         ldout(m_cct , 5) << "rm_ins_obj " << dendl;
+         ldout(m_cct , 0) << "rm_ins_obj " << dendl;
          worker->m_instobj->uninit();
-         ldout(m_cct , 5) << "uninit " << dendl;
+         ldout(m_cct , 0) << "uninit " << dendl;
          std::set<std::string> keys;
          keys.insert(worker->m_name);
          
@@ -4207,36 +4236,49 @@ void RGWBgtManager::check_workers( ) {
          
          m_workers.erase(it++);
          delete worker;
-       }
-       else {
-          it++;
-       }
      }
-     else
+    else {
        it++;
+    }
   }
   workers_data_lock->Unlock();  
-  ldout(m_cct , 5) << "end check workers" << dendl;
+  ldout(m_cct , 0) << "check_workers  workers_data_lock.Unlock" << dendl;
 }
 
 //snap scheduler v
 void RGWBgtManager::snap_archive_v( ) {
 
-  //uint64_t num = (uint64_t)archive_num.read();
   int size = archive_v_queue.size();
-  if(size >= 11) {
+  if(size >= m_cct->_conf->rgw_merger_speed_sample_window_size) {
      archive_v_queue.pop_front();
   }
-  else {
-    ldout(m_cct , 5) << " snap merger v "<< archive_num.read() << dendl;
-    archive_v_queue.push_back( archive_num.read());
-  }
+  
+  
+  uint64_t num = archive_num.read();
+  ldout(m_cct , 0) << " snap merger v "<< num << dendl;
+  archive_v_queue.push_back(num);
+  
   //
   std::list<uint64_t>::iterator it ;
   
+  int i = 0;
+  merger_v_ret.clear();
+  merger_v_ret = vector<uint64_t>( m_cct->_conf->rgw_merger_speed_sample_window_size , 0);
   for(it = archive_v_queue.begin(); it != archive_v_queue.end(); it++ ) {
-    ldout(m_cct , 5) << "merger v === " << (*it) << dendl;
+    ldout(m_cct , 0) << "merger v === " << (*it) << dendl;
+    merger_v_ret[i] = *it;
+    i++;
   }
+}
+//gen merger speed
+void RGWBgtManager::gen_merger_speed(vector<uint64_t>& vec) {
+
+  vec.clear();
+  vec.resize(merger_v_ret.size(),0);
+  vec = merger_v_ret;
+//  merger_speed_lock.Lock();
+
+//  merger_speed_lock.UnLock();
 }
 
 void* RGWBgtManager::entry() {
@@ -4246,21 +4288,21 @@ void* RGWBgtManager::entry() {
     ldout(m_cct , 5) << "RGWBgtManager::entry" << dendl;
 
     time_t cur_time = ceph_clock_now(0).sec();
-    if(cur_time - pre_check_worker_time > WORKER_IDLE_TIMESPAN) { 
+    if(cur_time - pre_check_worker_time > 10) { 
       ldout(m_cct , 5) << "start check workers" << dendl;
       check_workers();
       pre_check_worker_time = ceph_clock_now(0).sec();
     }
 
     cur_time = ceph_clock_now(0).sec();
-    if(cur_time - pre_reload_scheduler_info_time > RELOAD_SCHEDULER_INFO_TIMESPAN ) {
+    if(cur_time - pre_reload_scheduler_info_time > m_cct->_conf->rgw_reload_scheduler_time ) {
       ldout(m_cct , 5) << "start reload schedulers" << dendl;
       reload_scheduler();
       pre_reload_scheduler_info_time = ceph_clock_now(0).sec();
     }
 
     cur_time = ceph_clock_now(0).sec();
-    if(cur_time - pre_snap_v_time > SNAP_MERGER_V ) {
+    if(cur_time - pre_snap_v_time > m_cct->_conf->rgw_merger_speed_sample_frequency ) {
       snap_archive_v( );
       pre_snap_v_time = cur_time;
     }
@@ -4294,6 +4336,9 @@ void RGWBgtManager::stop()
 
   join();
 }
+
+
+
 
 //==============================================================================
 RGWManager::RGWManager() {
