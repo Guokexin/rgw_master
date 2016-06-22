@@ -22,6 +22,6 @@
 [submodule "ceph-erasure-code-corpus"]
 	path = ceph-erasure-code-corpus
 	url = https://github.com/ceph/ceph-erasure-code-corpus.git
-[submodule "src/os/xstore"]
-	path = src/os/xstore
-	url = git@github.xsky.com:ceph/XStore.git
+#[submodule "src/os/xstore"]
+#	path = src/os/xstore
+#	url = git@github.xsky.com:ceph/XStore.git
