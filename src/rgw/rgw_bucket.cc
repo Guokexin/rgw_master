@@ -574,7 +574,19 @@ int RGWBucket::create(RGWRados *storage, RGWBucketAdminOpState& op_state, std::s
     set_err_msg(err_msg, "empyt bucket name");
     return -EINVAL;
   }
- 
+  if (user_info.max_buckets) {
+    RGWUserBuckets buckets;
+    string marker;
+    int ret = rgw_read_user_buckets(store, user_id, buckets, marker, user_info.max_buckets, false);
+    if (ret < 0)
+      return ret;
+  
+    map<string, RGWBucketEnt>& m = buckets.get_buckets();
+   if (m.size() >= user_info.max_buckets) {
+        set_err_msg(err_msg, "buckets has reached the maximum value");
+        return -EINVAL;
+    }
+  }
 
   //RGWAccessControlPolicy old_policy(s->cct);
   RGWAccessControlPolicy policy(store->ctx());

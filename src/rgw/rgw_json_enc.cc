@@ -499,7 +499,8 @@ void rgw_bucket::dump(Formatter *f) const
   encode_json("data_small_pool", data_small_pool, f);               /* Begin added by hechuang */
   encode_json("data_big_pool", data_big_pool, f);
   encode_json("obj_is_small_or_big", obj_is_small_or_big, f);
-  encode_json("compress", compress, f);                           /* End added */
+  encode_json("compress", compress, f);                         
+  encode_json("archive", archive, f);                           /* End added */
 }
 
 void rgw_bucket::decode_json(JSONObj *obj) {
@@ -512,7 +513,8 @@ void rgw_bucket::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("data_small_pool", data_small_pool, obj);           /* Begin added by hechuang */
   JSONDecoder::decode_json("data_big_pool", data_big_pool, obj);
   JSONDecoder::decode_json("obj_is_small_or_big", obj_is_small_or_big, obj);
-  JSONDecoder::decode_json("compress", compress, obj);                         /* Begin added by hechuang */
+  JSONDecoder::decode_json("compress", compress, obj);                        
+  JSONDecoder::decode_json("archive", archive, obj);                         /* Begin added by hechuang */
 }
 
 void RGWBucketEntryPoint::dump(Formatter *f) const
@@ -651,6 +653,7 @@ void RGWZonePlacementInfo::dump(Formatter *f) const
   encode_json("data_big_pool", data_big_pool, f);
   encode_json("obj_is_small_or_big", obj_is_small_or_big, f);
   encode_json("compress", compress, f);
+  encode_json("archive", archive, f);
   /* End added */
 
 }
@@ -665,6 +668,7 @@ void RGWZonePlacementInfo::decode_json(JSONObj *obj)
   JSONDecoder::decode_json("data_big_pool", data_big_pool, obj);
   JSONDecoder::decode_json("obj_is_small_or_big", obj_is_small_or_big, obj);
   JSONDecoder::decode_json("compress", compress, obj);
+  JSONDecoder::decode_json("archive", archive, obj);
   /* End added */
 
 }

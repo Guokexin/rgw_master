@@ -339,7 +339,8 @@ void RGWZoneParams::init_default(RGWRados *store)
     default_placement.data_small_pool = ".rgw.buckets";           /* Begin added by hechuang */
     default_placement.data_big_pool = ".rgw.buckets";
     default_placement.obj_is_small_or_big = 0;
-    default_placement.compress = false;                    /* End added */
+    default_placement.compress = false;                   
+    default_placement.archive = false;                    /* End added */
     placement_pools["default-placement"] = default_placement;
   }
 }
@@ -1152,7 +1153,7 @@ int RGWPutObjProcessor_Atomic::check_compress_and_blocking(bool blocking, bool e
       }
 */    
       
-      r = 0;//throttle_data(handle, exclusive);//For CMCC Test
+      r = throttle_data(handle, ofs2obj_map[ofs], exclusive);
       if (r < 0) {
         ldout(store->ctx(), 0) << "ERROR: throttle_data() returned " << r << dendl;
         return r;
@@ -4029,6 +4030,7 @@ int RGWRados::set_bucket_location_by_rule(const string& location_rule, const std
   bucket.data_big_pool = placement_info.data_big_pool;
   bucket.obj_is_small_or_big = placement_info.obj_is_small_or_big;
   bucket.compress = placement_info.compress;
+  bucket.archive = placement_info.archive;
   /* End added */
 
 
@@ -9332,6 +9334,7 @@ int RGWRados::get_bucket_instance_from_oid(RGWObjectCtx& obj_ctx, string& oid, R
   info.bucket.data_big_pool = placement_info.data_big_pool;
   info.bucket.obj_is_small_or_big = placement_info.obj_is_small_or_big;
   info.bucket.compress = placement_info.compress;
+  info.bucket.archive = placement_info.archive;
   /* End added */
   info.bucket.oid = oid;
   return 0;
@@ -9374,6 +9377,7 @@ int RGWRados::get_bucket_entrypoint_info(RGWObjectCtx& obj_ctx, const string& bu
     entry_point.old_bucket_info.bucket.data_big_pool = placement_info.data_big_pool;
     entry_point.old_bucket_info.bucket.obj_is_small_or_big = placement_info.obj_is_small_or_big;
     entry_point.old_bucket_info.bucket.compress = placement_info.compress;
+    entry_point.old_bucket_info.bucket.archive = placement_info.archive;
     /* End added */
   }
   return 0;

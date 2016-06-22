@@ -604,12 +604,13 @@ struct rgw_bucket {
   std::string bucket_id;
   /* Begin added by hechuang */
   bool compress;
+  bool archive;
   /* End added */
   std::string oid; /*
                     * runtime in-memory only info. If not empty, points to the bucket instance object
                     */
 
-  rgw_bucket() : obj_is_small_or_big(0), compress(false) { } //modify by hechuang
+  rgw_bucket() : obj_is_small_or_big(0), compress(false), archive(false) { } //modify by hechuang
   rgw_bucket(const cls_user_bucket& b) {
     name = b.name;
     data_pool = b.data_pool;
@@ -621,14 +622,15 @@ struct rgw_bucket {
     marker = b.marker;
     bucket_id = b.bucket_id;
     compress = b.compress;             //modify by hechuang
+    archive = b.archive;             //modify by hechuang
   }
-  rgw_bucket(const char *n) : name(n), obj_is_small_or_big(0), compress(false) {   //modify by hechuang
+  rgw_bucket(const char *n) : name(n), obj_is_small_or_big(0), compress(false), archive(false) {   //modify by hechuang
     assert(*n == '.'); // only rgw private buckets should be initialized without pool
     data_pool = index_pool = n;
     marker = "";
   }
   rgw_bucket(const char *n, const char *dp, const char *ip, const char *m, const char *id, const char *h) :
-    name(n), data_pool(dp), obj_is_small_or_big(0), index_pool(ip), marker(m), bucket_id(id), compress(false) {}     //modify by hechuang
+    name(n), data_pool(dp), obj_is_small_or_big(0), index_pool(ip), marker(m), bucket_id(id), compress(false), archive(false) {}     //modify by hechuang
 
   void convert(cls_user_bucket *b) {
     b->name = name;
@@ -641,6 +643,7 @@ struct rgw_bucket {
     b->marker = marker;
     b->bucket_id = bucket_id;
     b->compress = compress;                     //modify by hechuang
+    b->archive = archive;                     //modify by hechuang
   }
 
   void encode(bufferlist& bl) const {
@@ -655,6 +658,7 @@ struct rgw_bucket {
     ::encode(data_big_pool, bl);               //modify by hechuang
     ::encode(obj_is_small_or_big, bl);         //modify by hechuang
     ::encode(compress, bl);                  //modify by hechuang
+    ::encode(archive, bl);                  //modify by hechuang
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& bl) {
@@ -686,6 +690,7 @@ struct rgw_bucket {
       ::decode(data_big_pool, bl);
       ::decode(obj_is_small_or_big, bl);
 	  ::decode(compress, bl);
+	  ::decode(archive, bl);
     }
 
     DECODE_FINISH(bl);

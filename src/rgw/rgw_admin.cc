@@ -1963,9 +1963,8 @@ int main(int argc, char **argv)
   if (opt_cmd == OPT_BUCKET_ACL) {
     string err;
     int r = RGWBucketAdminOp::acl(store, bucket_op, &err);
-    cerr << "r="<< r <<" err=" << err << std::endl;
     if (r < 0) {
-      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      cerr << "ERROR: " << err << std::endl;
       return -r;
     }
 
@@ -1975,7 +1974,7 @@ int main(int argc, char **argv)
     string err;
     int r = RGWBucketAdminOp::nocompress(store, bucket_op, &err);
     if (r < 0) {
-      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      cerr << "ERROR: "<< err << std::endl;
       return -r;
     }
 
@@ -1985,7 +1984,7 @@ int main(int argc, char **argv)
     string err;
     int r = RGWBucketAdminOp::compress(store, bucket_op, &err);
     if (r < 0) {
-      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      cerr << "ERROR: "<< err << std::endl;
       return -r;
     }
 
@@ -1995,7 +1994,7 @@ int main(int argc, char **argv)
     string err;
     int r = RGWBucketAdminOp::storage_policy(store, bucket_op, &err);
     if (r < 0) {
-      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      cerr << "ERROR: "<< err << std::endl;
       return -r;
     }
 
@@ -2005,14 +2004,13 @@ int main(int argc, char **argv)
     string err;
     int r = RGWBucketAdminOp::create(store, bucket_op, &err);
     if (r < 0) {
-      cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+      cerr << "ERROR: " << err << std::endl;
       return -r;
     }
     if (!bucket_acl.empty()) {
-      cerr << "create bucket acl" << std::endl;
       r = RGWBucketAdminOp::acl(store, bucket_op, &err);
       if (r < 0) {
-        cerr << "failure: " << cpp_strerror(-r) << ": " << err << std::endl;
+        cerr << "ERROR: "<< ": " << err << std::endl;
         return -r;
       }
     }

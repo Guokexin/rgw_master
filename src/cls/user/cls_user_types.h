@@ -23,8 +23,9 @@ struct cls_user_bucket {
   std::string data_big_pool;
   int64_t obj_is_small_or_big;
   bool compress;
+  bool archive;
 
-  cls_user_bucket() : obj_is_small_or_big(0), compress(false) {}
+  cls_user_bucket() : obj_is_small_or_big(0), compress(false), archive(false) {}
   /* End added */
 
   void encode(bufferlist& bl) const {
@@ -39,6 +40,7 @@ struct cls_user_bucket {
     ::encode(data_big_pool, bl);       //modify by hechuang
     ::encode(obj_is_small_or_big, bl); //modify by hechuang
     ::encode(compress, bl); //modify by hechuang
+    ::encode(archive, bl); //modify by hechuang
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& bl) {
@@ -70,6 +72,7 @@ struct cls_user_bucket {
       ::decode(data_big_pool, bl);
       ::decode(obj_is_small_or_big, bl);
       ::decode(compress, bl);
+      ::decode(archive, bl);
     }
 
     DECODE_FINISH(bl);

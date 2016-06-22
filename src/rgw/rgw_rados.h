@@ -774,6 +774,7 @@ struct RGWZonePlacementInfo {
   string data_big_pool; /* if not set we should use data_pool */
   int64_t obj_is_small_or_big;
   bool compress;          /* compress SW */
+  bool archive;          
   /* End added */
 
   void encode(bufferlist& bl) const {
@@ -784,7 +785,8 @@ struct RGWZonePlacementInfo {
     ::encode(data_small_pool, bl);       //Begin added by hechuang
     ::encode(data_big_pool, bl);
     ::encode(obj_is_small_or_big, bl);    
-	::encode(compress, bl);              //End added
+	::encode(compress, bl);              
+	::encode(archive, bl);              //End added
     ENCODE_FINISH(bl);
   }
 
@@ -800,6 +802,7 @@ struct RGWZonePlacementInfo {
       ::decode(data_big_pool, bl);
       ::decode(obj_is_small_or_big, bl);
 	  ::decode(compress, bl);
+	  ::decode(archive, bl);
     }
 
     DECODE_FINISH(bl);
