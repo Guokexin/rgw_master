@@ -120,8 +120,7 @@ void _usage()
   cerr << "  replicalog delete          delete replica metadata log entry\n";
   cout << "  orphans find               init and run search for leaked rados objects\n";
   cout << "  orphans finish             clean up search for leaked rados objects\n";
-  cout << "  scheduler create           create a new archive server instance\n";
-  cout << "  scheduler update           update a exist archive server instance\n";
+  cout << "  archivepool set            set a archive pool in .rgw.archive.man\n";
   cerr << "options:\n";
   cerr << "   --uid=<id>                user id\n";
   cerr << "   --subuser=<name>          subuser name\n";
@@ -294,6 +293,7 @@ enum {
   OPT_REPLICALOG_GET,
   OPT_REPLICALOG_UPDATE,
   OPT_REPLICALOG_DELETE,
+  OPT_ARCHIVEPOOL_SET
 };
 
 static int get_cmd(const char *cmd, const char *prev_cmd, bool *need_more)
@@ -328,13 +328,18 @@ static int get_cmd(const char *cmd, const char *prev_cmd, bool *need_more)
       strcmp(cmd, "temp") == 0 ||
       strcmp(cmd, "usage") == 0 ||
       strcmp(cmd, "user") == 0 ||
-      strcmp(cmd, "zone") == 0) {
-    *need_more = true;
-    return 0;
-  }
+      strcmp(cmd, "zone") == 0 || 
+      //begin added by guokexin
+      strcmp(cmd,  "archivepool") ==0 ) 
+      //end                            
+      {
+       *need_more = true;
+        return 0;
+      }
 
   if (strcmp(cmd, "policy") == 0)
     return OPT_POLICY;
+
 
   if (!prev_cmd)
     return -EINVAL;
@@ -537,6 +542,11 @@ static int get_cmd(const char *cmd, const char *prev_cmd, bool *need_more)
     if (strcmp(cmd, "delete") == 0)
       return OPT_REPLICALOG_DELETE;
   }
+  else if( strcmp(prev_cmd , "archivepool") == 0) {
+     if(strcmp(cmd, "set") == 0) {
+       return OPT_ARCHIVEPOOL_SET;
+     }
+  }
 
   return -EINVAL;
 }
@@ -595,6 +605,8 @@ void dump_bi_entry(bufferlist& bl, BIIndexType index_type, Formatter *formatter)
   }
 }
 
+
+
 static void show_user_info(RGWUserInfo& info, Formatter *formatter)
 {
   encode_json("user_info", info, formatter);
@@ -619,6 +631,7 @@ static void dump_bucket_usage(map<RGWObjCategory, RGWStorageStats>& stats, Forma
   }
   formatter->close_section();
 }
+
 
 int bucket_stats(rgw_bucket& bucket, Formatter *formatter)
 {
@@ -1113,50 +1126,86 @@ int do_check_object_locator(const string& bucket_name, bool fix, bool remove_bad
 
   return 0;
 }
+//added by guokexin
+struct RGWArchiveInfo
+{
+	string hot_pool;
+  string cold_pool;
+  string name;
+
+  void encode(bufferlist& bl) const
+  {
+  	ENCODE_START(1, 1, bl);
+		::encode(hot_pool, bl);
+		::encode(cold_pool, bl);
+    ::encode(name,bl);
+		ENCODE_FINISH(bl);
+  }
+  void decode(bufferlist::iterator& iter)
+  {
+  	DECODE_START(1, iter);
+		::decode(hot_pool, iter);
+		::decode(cold_pool, iter);
+    ::decode(name,iter);
+		DECODE_FINISH(iter);
+  }
+	
+  void dump(Formatter *f) const
+  {
+		f->dump_string("hot_pool", hot_pool);
+		f->dump_string("cold_pool", cold_pool);
+    f->dump_string("name",name);
+	}		
+};
+WRITE_CLASS_ENCODER(RGWArchiveInfo);
 
 
-//begin added by guokexin
-int create_archive_instance( std::string  index_pool , std::string archive_pool) {
-  return 0;
-/*
-  int r = 0 ;
 
-  std::string prefix = "" ;
-  std::string pool = pool_name;
-  librados::IoCtx io_ctx;
+int set_archive_pool(std::string archive_pool_name , Formatter* f) {
+  //cerr << "set_archive_pool" <<  archive_pool_name << std::endl;
+  f->open_object_section("set_archivepool");
+  f->open_object_section("set_archivepool");
+  int r = 0;
+   librados::IoCtx io_ctx;
   if(store != NULL) {
     librados::Rados *rados = store->get_rados_handle() ;
     if ( rados != NULL ) {  
       std::string pool = g_ceph_context->_conf->rgw_primary_pool;
+      //cerr << "rgw_primary_pool  = " << pool << std::endl;
       r = rados->ioctx_create(pool.c_str(), io_ctx);
-      if (r < 0)
-      {
-        cerr << "error create ioctx " << std::endl;
-        return ;
-      } 
-      else {
+      if(r == 0) {
+        std::string obj_name = "xsky.manager.archive_pool";
+        r = io_ctx.create(obj_name,true);
+        if(r == 0 || -EEXIST == r) {
+          std::string key_name = "primary_archive_pool";
+          bufferlist bl;
+          std :: map < std :: string, bufferlist > values;
+          RGWArchiveInfo info;
+          info.hot_pool = "hot_pool";
+          info.cold_pool = archive_pool_name;  
+          info.name = "";
+          ::encode(info,bl);
+          values[key_name] = bl;
+          r = io_ctx.omap_set(obj_name , values ); 
+          if(r == 0) {
+            //cerr << " succ"<< std::endl;
+            f->dump_string("result", "0");
+            //return succ;
 
-        std::string  name = "xsky.manager.archive.task.inst";
-        r = io_ctx.create(m_name, true);
-        if (r != 0 && -EEXIST != r)
-        {
-            cerr << "error create obj " << name << " in pool " << pool << ": "
-                    << cpp_strerror(r) << std::dendl;
-            return r;
+          }
         }
-        if (-EEXIST == r)
-        {
-            ldout(m_cct, 10) << "obj " << name << " has existed in pool " << m_pool << ": "
-                    << cpp_strerror(r) << dendl;
-            r = 0;
-        }
-        //=============================================================
-        
-        //=============================================================
       }
     }
   }
-*/
+  
+  if(r != 0) {
+    f->dump_string("result", "-1");
+  }
+  
+  f->close_section();
+  f->close_section();
+  f->flush(cout);
+  return -1; // return fail
 }
 
 //
@@ -1257,6 +1306,10 @@ int main(int argc, char **argv)
   std::ostringstream errs;
   string err;
   long long tmp = 0;
+
+  //begin added by guokexin
+  std::string archive_pool;
+  //end
 
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
     if (ceph_argparse_double_dash(args, i)) {
@@ -3230,6 +3283,13 @@ next:
     formatter->flush(cout);
     cout << std::endl;
   }
+
+  //begin added by guokexin
+  if(OPT_ARCHIVEPOOL_SET == opt_cmd) {
+    set_archive_pool(pool_name,formatter); 
+  }
+  
+  //end
 
   if (opt_cmd == OPT_REPLICALOG_DELETE) {
     if (replica_log_type == ReplicaLog_Metadata) {

@@ -1461,11 +1461,11 @@ int RGWPutObjProcessor_Atomic::do_complete(string& etag, time_t *mtime, time_t s
   }  
   
   //begin add guokexin 20160622
+  std::string index_pool = bucket_info.bucket.index_pool;
   if(bucket_info.bucket.archive) {
-    std::string index_pool = bucket_info.bucket.index_pool;
-    std::string cold_pool = store->ctx()->_conf->rgw_archive_pool;
     RGWBgtManager* manager = RGWBgtManager::instance( );
     RGWBgtScheduler* scheduler = manager->get_adapter_scheduler(index_pool);
+    std::string cold_pool =  manager->archive_pool;//store->ctx()->_conf->rgw_archive_pool;
     std::string name = "name";
     if(!scheduler) {
 
@@ -1481,10 +1481,10 @@ int RGWPutObjProcessor_Atomic::do_complete(string& etag, time_t *mtime, time_t s
       }
     }
     else {
-       if(store->ctx()->_conf->rgw_archive_pool != scheduler->cold_pool) {
-         scheduler->cold_pool = store->ctx()->_conf->rgw_archive_pool;
-         manager->update_scheduler_instance(index_pool , cold_pool, name);
-       }
+       //if(store->ctx()->_conf->rgw_archive_pool != scheduler->cold_pool) {
+       //  scheduler->cold_pool = store->ctx()->_conf->rgw_archive_pool;
+       //  manager->update_scheduler_instance(index_pool , cold_pool, name);
+       //}
     }
     store->write_bgt_change_log(bucket_info.bucket, head_obj, obj_len);
   }

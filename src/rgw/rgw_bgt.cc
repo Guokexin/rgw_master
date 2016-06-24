@@ -1567,9 +1567,9 @@ void RGWBgtScheduler::check_batch_task() {
          //check scheduler_info 
          RGWBgtManager* pManager = RGWBgtManager::instance();     
          std::string key = RGW_BGT_SCHEDULER_INST_PREFIX + hot_pool;
-         RGWSchedulerInfo info;
-         pManager->get_scheduler_info(key,info);
-         cold_pool = info.cold_pool;
+         //RGWSchedulerInfo info;
+         //pManager->get_scheduler_info(key,info);
+         cold_pool = pManager->archive_pool;//info.cold_pool;
          //
          ldout(m_cct , 0) << "RGW_BGT_BATCH_TASK_FINISH " << dendl;
          batch_task_info.log_name = log_name;
@@ -3819,6 +3819,7 @@ int RGWBgtManager::init(RGWRados* _store, CephContext* _cct) {
 
   //   
   //ldout(m_cct , 5) << "get scheduler and merger instance object" << dendl;
+  reload_archive_pool();
   get_scheduler_merger_info( );
 
   pre_check_worker_time = ceph_clock_now(0).sec();
@@ -3826,6 +3827,42 @@ int RGWBgtManager::init(RGWRados* _store, CephContext* _cct) {
   pre_snap_v_time = ceph_clock_now(0).sec();
   //start check thread
   start( );
+  return 0;
+}
+
+int RGWBgtManager::reload_archive_pool( ) {
+
+  int r;
+  std::set<std::string> keys;
+  std::map<std::string,bufferlist> vals;
+  std::string obj_name = "xsky.manager.archive_pool";
+  keys.insert("primary_archive_pool");
+  r = m_manager_inst_obj->m_io_ctx.omap_get_vals_by_keys(obj_name,keys,&vals);
+
+  std::string t_pool = "";
+  if(0 == r) {
+    RGWSchedulerInfo info;
+    bufferlist::iterator iter = vals["primary_archive_pool"].begin();
+    ::decode(info,iter);
+    ldout(m_cct , 0) << info.cold_pool << dendl;
+
+     t_pool = info.cold_pool;
+     if(t_pool != archive_pool) {
+       
+       schedulers_data_lock->Lock();
+       archive_pool = t_pool;
+       std::map< std::string , RGWBgtScheduler*>::iterator it  ; // m_schedulers.find(scheduler_name);
+       for(it = m_schedulers.begin(); it != m_schedulers.end(); it++ ) {
+         RGWBgtScheduler* scheduler = (*it).second;
+         scheduler->cold_pool = archive_pool;
+
+       }
+       schedulers_data_lock->Unlock();
+
+     }
+
+  }
+
   return 0;
 }
 
@@ -3868,7 +3905,7 @@ int RGWBgtManager::reload_scheduler( ) {
           schedulers_data_lock->Lock();
           std :: map < std::string, RGWBgtScheduler*> :: iterator s_it = m_schedulers.find(key);
           if( s_it == m_schedulers.end() ) {
-            RGWBgtScheduler* scheduler = new RGWBgtScheduler(m_store,m_cct,info.hot_pool, info.cold_pool);
+            RGWBgtScheduler* scheduler = new RGWBgtScheduler(m_store,m_cct,info.hot_pool, archive_pool/*info.cold_pool*/);
             if(scheduler != NULL) {
                ret = scheduler->init( );
                m_schedulers.insert(std::pair<std::string, RGWBgtScheduler*>( scheduler->m_name, scheduler));
@@ -3892,23 +3929,11 @@ int RGWBgtManager::reload_scheduler( ) {
           ldout(m_cct , 5) << " value is "<< info.cold_pool << dendl;
           RGWBgtScheduler* scheduler = s_it->second;
           //refresh it
-          scheduler->cold_pool = info.cold_pool; 
-
+          scheduler->cold_pool = archive_pool;//info.cold_pool; 
+          //std::string name = "name";
+          //update_scheduler_instance(scheduler->hot_pool , archive_pool, name );
           
-          //schedulers_data_lock->Lock();
-          //std :: map < std::string, RGWBgtScheduler*> :: iterator s_it = m_schedulers.find(key);
-          //if( s_it == m_schedulers.end() ) {
-          //  RGWBgtScheduler* scheduler = new RGWBgtScheduler(m_store,m_cct,info.hot_pool, info.cold_pool);
-          //  if(scheduler != NULL) {
-          //    ret = scheduler->init( );
-          //    m_schedulers.insert(std::pair<std::string, RGWBgtScheduler*>( scheduler->m_name, scheduler));
-          // }
-          // }
-          //schedulers_data_lock->Unlock( );
-
         }
-                 
-
       }
     }
     else {
@@ -4056,6 +4081,7 @@ int RGWBgtManager::update_scheduler_instance(std::string& hot_pool, std::string&
     if(ret != 0) {
       return -2; //update failed
     }
+    scheduler->cold_pool = cold_pool;
     return 0;//update succ
   }
   else {
@@ -4063,7 +4089,6 @@ int RGWBgtManager::update_scheduler_instance(std::string& hot_pool, std::string&
   }
   return 0;
 }
-
 
 
 
@@ -4089,7 +4114,7 @@ int RGWBgtManager::gen_scheduler_instance(std::string& hot_pool, std::string& co
   std :: map < std :: string, bufferlist > values;
   RGWSchedulerInfo info;
   info.hot_pool = hot_pool;
-  info.cold_pool = cold_pool;  
+  info.cold_pool = archive_pool;//cold_pool;  
   info.name = name;
   ::encode(info,bl);
   values[key_name] = bl;
@@ -4123,6 +4148,10 @@ int RGWBgtManager::gen_scheduler_instance(std::string& hot_pool, std::string& co
   schedulers_data_lock->Unlock();
   return 0;
 }
+//
+
+
+
 //
 RGWBgtWorker*  RGWBgtManager::get_idle_merger_instance( ) {
 
@@ -4277,6 +4306,10 @@ void* RGWBgtManager::entry() {
   while (!stopping)
   {
     ldout(m_cct , 5) << "RGWBgtManager::entry" << dendl;
+    uint32_t sec = m_cct->_conf->rgw_bgt_tick_interval/1000;
+    uint32_t nsec = (m_cct->_conf->rgw_bgt_tick_interval % 1000)*1000*1000; 
+
+
 
     time_t cur_time = ceph_clock_now(0).sec();
     if(cur_time - pre_check_worker_time > 10) { 
@@ -4285,12 +4318,13 @@ void* RGWBgtManager::entry() {
       pre_check_worker_time = ceph_clock_now(0).sec();
     }
 
-    //cur_time = ceph_clock_now(0).sec();
-    //if(cur_time - pre_reload_scheduler_info_time > m_cct->_conf->rgw_reload_scheduler_time ) {
-    //  ldout(m_cct , 5) << "start reload schedulers" << dendl;
-    //  reload_scheduler();
-    //  pre_reload_scheduler_info_time = ceph_clock_now(0).sec();
-    //}
+    cur_time = ceph_clock_now(0).sec();
+    if(cur_time - pre_reload_scheduler_info_time > m_cct->_conf->rgw_reload_scheduler_time ) {
+      ldout(m_cct , 5) << "start reload schedulers" << dendl;
+      //reload_scheduler();
+      reload_archive_pool();
+      pre_reload_scheduler_info_time = ceph_clock_now(0).sec();
+    }
 
     cur_time = ceph_clock_now(0).sec();
     if(cur_time - pre_snap_v_time > m_cct->_conf->rgw_merger_speed_sample_frequency ) {
@@ -4299,7 +4333,7 @@ void* RGWBgtManager::entry() {
     }
 
     lock->Lock();
-    cond.WaitInterval(NULL, *lock, utime_t(5, 0));
+    cond.WaitInterval(NULL, *lock, utime_t(sec, nsec));
     lock->Unlock();
   }
 

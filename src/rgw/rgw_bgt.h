@@ -1467,7 +1467,7 @@ class RGWBgtManager : public Thread {
   friend class RGWBgtWorker;
   friend class RGWBgtScheduler;
   private:
-    RGWBgtManager( ):m_manager_inst_obj(NULL),m_merger_inst_obj(NULL),app_num(0),worker_num(0),m_store(NULL),m_cct(NULL),archive_num(0),stopping(true),b_reload_workers(false)
+    RGWBgtManager( ):m_manager_inst_obj(NULL),m_merger_inst_obj(NULL),app_num(0),worker_num(0),m_store(NULL),m_cct(NULL),archive_num(0),stopping(true),b_reload_workers(false),archive_pool("")
      { 
        
      };
@@ -1555,7 +1555,9 @@ class RGWBgtManager : public Thread {
     int reload_workers( );
     void snap_archive_v( );
     void  gen_merger_speed(vector<uint64_t>& vec);
+    int reload_archive_pool();
     //thread function implement
+
    public:
     void *entry();
     void start();
@@ -1568,6 +1570,7 @@ class RGWBgtManager : public Thread {
 
   public:
     bool b_reload_workers;
+    std::string archive_pool;
 };
 
 
