@@ -2305,7 +2305,8 @@ RGWBgtScheduler::RGWBgtScheduler(RGWRados* _store, CephContext* _cct, std::strin
                                        hot_pool(_hot_pool),
                                        cold_pool(_cold_pool),
                                        update_change_log_lock(rgw_unique_lock_name("RGWBgtScheduler::update_lock" + m_cct->_conf->name.to_str() + _hot_pool, this)),
-                                       change_log_num(0)
+                                       change_log_num(0),
+                                       b_archive(false)
 {
 
   m_name = RGW_BGT_SCHEDULER_INST_PREFIX + hot_pool + "_" +m_cct->_conf->name.to_str() ;
@@ -4070,32 +4071,13 @@ int RGWBgtManager::gen_scheduler_instance(std::string& hot_pool, std::string& co
   
   int ret = 0 ;
   
+  schedulers_data_lock->Lock();
   ldout(m_cct , 5) << "gen_scheduler_instance" << dendl;
-  //judge scheduler'exist
-  RGWBgtScheduler* scheduler = get_adapter_scheduler(hot_pool);
-  if( scheduler != NULL ) {
-    return -1; //it already exist
-    //restore scheduler info,check threads relaod scheduler_info
-    /*
-    ldout(m_cct , 5) << "scheduler instance " << hot_pool << " exist, refresh it" << dendl;
-    std::string key_name;
-    key_name = RGW_BGT_SCHEDULER_INST_PREFIX + hot_pool;
-    bufferlist bl;
-    std :: map < std :: string, bufferlist > values;
-    RGWSchedulerInfo info;
-    info.hot_pool = hot_pool;
-    info.cold_pool = cold_pool;  
-    info.name = name;
-    ::encode(info,bl);
-    values[key_name] = bl;
-    ret = m_manager_inst_obj->m_io_ctx.omap_set(m_manager_inst_name , values ); 
-    return ret;
-    */
-  }
 
   //new scheduler instance
   RGWBgtScheduler* pScheduler = new RGWBgtScheduler(m_store, m_cct, hot_pool, cold_pool);
   if(!pScheduler) {
+    schedulers_data_lock->Unlock();
     return -2;
   }
 
@@ -4112,24 +4094,33 @@ int RGWBgtManager::gen_scheduler_instance(std::string& hot_pool, std::string& co
   ::encode(info,bl);
   values[key_name] = bl;
   ret = m_manager_inst_obj->m_io_ctx.omap_set(m_manager_inst_name , values ); 
-  if(ret != 0) { 
+
+  if(ret == 0) { 
     //add it into map
-    schedulers_data_lock->Lock();
     ret = pScheduler->init( );
     if( ret < 0 ) {
-      ldout(m_cct , 5) << "fail to init schedule" << pScheduler->m_name << dendl;
+      ldout(m_cct , 0) << "fail to init schedule" << pScheduler->m_name << dendl;
       schedulers_data_lock->Unlock();
+      if(pScheduler != NULL) {
+        delete pScheduler;
+        pScheduler = NULL;
+      }
       return -2; 
     }
     else {
       m_schedulers.insert(std::pair<std::string,RGWBgtScheduler*>(pScheduler->m_name,pScheduler));
-      schedulers_data_lock->Unlock();
     }
   }
   else {
+    if(pScheduler != NULL) {
+      delete pScheduler;
+      pScheduler = NULL;
+    }
+    schedulers_data_lock->Unlock();
     return -100;
   }
 
+  schedulers_data_lock->Unlock();
   return 0;
 }
 //
@@ -4294,12 +4285,12 @@ void* RGWBgtManager::entry() {
       pre_check_worker_time = ceph_clock_now(0).sec();
     }
 
-    cur_time = ceph_clock_now(0).sec();
-    if(cur_time - pre_reload_scheduler_info_time > m_cct->_conf->rgw_reload_scheduler_time ) {
-      ldout(m_cct , 5) << "start reload schedulers" << dendl;
-      reload_scheduler();
-      pre_reload_scheduler_info_time = ceph_clock_now(0).sec();
-    }
+    //cur_time = ceph_clock_now(0).sec();
+    //if(cur_time - pre_reload_scheduler_info_time > m_cct->_conf->rgw_reload_scheduler_time ) {
+    //  ldout(m_cct , 5) << "start reload schedulers" << dendl;
+    //  reload_scheduler();
+    //  pre_reload_scheduler_info_time = ceph_clock_now(0).sec();
+    //}
 
     cur_time = ceph_clock_now(0).sec();
     if(cur_time - pre_snap_v_time > m_cct->_conf->rgw_merger_speed_sample_frequency ) {

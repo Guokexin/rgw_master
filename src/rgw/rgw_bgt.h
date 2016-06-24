@@ -1309,7 +1309,9 @@ protected:
 	atomic64_t max_log_id;
 	string active_change_log;
   std::string hot_pool;
+public:
   std::string cold_pool;
+protected:
 	RWLock update_change_log_lock;
 	atomic64_t change_log_num;
   std::string m_name;
@@ -1324,6 +1326,8 @@ protected:
   std :: map<std::string ,RGWBatchInst> m_processing_task_inst;  
   //
   std :: map<std::string, std::map<uint64_t, RGWBgtTaskEntry> > m_log_task_entry;
+public:
+  bool  b_archive;
 };
 
 class RGWBgtWorker : public Thread

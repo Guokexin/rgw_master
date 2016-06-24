@@ -1124,6 +1124,7 @@ OPTION(rgw_merger_max_threads, OPT_U32, 50)
 OPTION(rgw_batch_task_num, OPT_U32, 1) 
 OPTION(rgw_merger_max_idle_time, OPT_U32, 3600) 
 OPTION(rgw_reload_scheduler_time, OPT_U32, 60) 
+OPTION(rgw_archive_pool,OPT_STR,"archive_pool")
 //end added
 
 OPTION(rgw_objexp_gc_interval, OPT_U32, 60 * 10) // maximum time between round of expired objects garbage collecting

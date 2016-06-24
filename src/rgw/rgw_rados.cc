@@ -1462,9 +1462,39 @@ int RGWPutObjProcessor_Atomic::do_complete(string& etag, time_t *mtime, time_t s
   
   //begin add guokexin 20160622
   if(bucket_info.bucket.archive) {
+    std::string index_pool = bucket_info.bucket.index_pool;
+    std::string cold_pool = store->ctx()->_conf->rgw_archive_pool;
+    RGWBgtManager* manager = RGWBgtManager::instance( );
+    RGWBgtScheduler* scheduler = manager->get_adapter_scheduler(index_pool);
+    std::string name = "name";
+    if(!scheduler) {
+
+      int ret = 0;
+      while(1) {
+        ret = manager->gen_scheduler_instance(index_pool,cold_pool, name);
+        if(ret == 0)
+          break;
+        else
+        {
+          ldout(store->ctx(), 0) << "gen_scheduler_instance ret = " << ret << dendl;
+        }
+      }
+    }
+    else {
+       if(store->ctx()->_conf->rgw_archive_pool != scheduler->cold_pool) {
+         scheduler->cold_pool = store->ctx()->_conf->rgw_archive_pool;
+         manager->update_scheduler_instance(index_pool , cold_pool, name);
+       }
+    }
     store->write_bgt_change_log(bucket_info.bucket, head_obj, obj_len);
   }
-  //end added
+  else{
+    RGWBgtManager* manager = RGWBgtManager::instance( );
+    RGWBgtScheduler* scheduler = manager->get_adapter_scheduler(index_pool);
+    if(scheduler) {
+        //if scheduler exist and is running ==> Sleep scheduler.
+    }
+  }
   /*End added*/
 
   return 0;
@@ -1654,7 +1684,6 @@ int RGWRados::write_bgt_change_log(rgw_bucket& bucket, rgw_obj& obj, uint64_t ob
   log_entry.bi_oid = bs.bucket_obj;
   log_entry.size = obj_len;
 
-  //r = this->m_bgt_worker->write_change_log(log_entry);
    
   //Begin added by guokexin
   RGWBgtManager* manager = RGWBgtManager::instance( );
